@@ -34,7 +34,7 @@ def stable_uuid(stable_id: str) -> str:
     same Kafka record always map to the same point — replays / restarts upsert
     in place instead of duplicating.
     """
-    digest = hashlib.sha1(stable_id.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(stable_id.encode("utf-8")).hexdigest()
     return str(uuid.UUID(digest[:32]))
 
 
