@@ -72,4 +72,34 @@ services:
       timeout: 5s
       retries: 12
 
-  # gateway: added in Day 3 once the pipeline lands.
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sc-gateway
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    environment:
+      SC_KAFKA_BOOTSTRAP_SERVERS: kafka:9094
+      SC_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      SC_QDRANT_URL: http://qdrant:6333
+      SC_KAFKA_TOPICS: ${SC_KAFKA_TOPICS:-orders}
+      SC_KAFKA_GROUP_ID: ${SC_KAFKA_GROUP_ID:-streamcontext-gateway}
+      SC_KAFKA_AUTO_OFFSET_RESET: ${SC_KAFKA_AUTO_OFFSET_RESET:-earliest}
+      SC_EMBEDDER_PROVIDER: ${SC_EMBEDDER_PROVIDER:-local}
+      SC_EMBEDDER_MODEL: ${SC_EMBEDDER_MODEL:-all-MiniLM-L6-v2}
+      SC_QDRANT_COLLECTION: ${SC_QDRANT_COLLECTION:-streamcontext}
+      SC_QDRANT_VECTOR_DIM: ${SC_QDRANT_VECTOR_DIM:-384}
+      SC_BATCH_SIZE: ${SC_BATCH_SIZE:-32}
+      SC_BATCH_FLUSH_INTERVAL_SEC: ${SC_BATCH_FLUSH_INTERVAL_SEC:-1.0}
+      SC_LOG_LEVEL: ${SC_LOG_LEVEL:-INFO}
+      SC_LOG_JSON: ${SC_LOG_JSON:-true}
+    volumes:
+      # Cache HF model weights across restarts so cold start is fast.
+      - ./.data/hf-cache:/home/streamcontext/.cache
+    restart: unless-stopped
