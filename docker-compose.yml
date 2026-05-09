@@ -1,19 +1,22 @@
 # streamcontext local stack: Kafka (KRaft, no Zookeeper) + Schema Registry + Qdrant.
-# The gateway service itself is added in Day 3 once the pipeline is implemented.
 #
 #   docker compose up -d
 #   python examples/producer.py        # synthesizes Avro orders into the `orders` topic
 #   open http://localhost:6333/dashboard  # inspect Qdrant
 #
 # Volumes are persisted under ./.data/ so a `down` doesn't blow away state. Add `-v` to nuke them.
+#
+# Ports are bound to 127.0.0.1 by default — none of these services run with auth, so we
+# never want them on the LAN. Override with SC_HOST_BIND=0.0.0.0 if you knowingly want to
+# expose them (e.g., from a VM to its host).
 
 services:
   kafka:
     image: bitnami/kafka:3.7
     container_name: sc-kafka
     ports:
-      - "9092:9092"   # external listener for clients on the host
-      - "9094:9094"   # internal listener for other compose services
+      - "${SC_HOST_BIND:-127.0.0.1}:9092:9092"   # external listener for clients on the host
+      - "${SC_HOST_BIND:-127.0.0.1}:9094:9094"   # internal listener for other compose services
     environment:
       # KRaft single-node setup
       KAFKA_CFG_NODE_ID: "1"
@@ -46,7 +49,7 @@ services:
       kafka:
         condition: service_healthy
     ports:
-      - "8081:8081"
+      - "${SC_HOST_BIND:-127.0.0.1}:8081:8081"
     environment:
       SCHEMA_REGISTRY_HOST_NAME: schema-registry
       SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
@@ -62,8 +65,8 @@ services:
     image: qdrant/qdrant:v1.10.1
     container_name: sc-qdrant
     ports:
-      - "6333:6333"   # REST + dashboard
-      - "6334:6334"   # gRPC
+      - "${SC_HOST_BIND:-127.0.0.1}:6333:6333"   # REST + dashboard
+      - "${SC_HOST_BIND:-127.0.0.1}:6334:6334"   # gRPC
     volumes:
       - ./.data/qdrant:/qdrant/storage
     healthcheck:
