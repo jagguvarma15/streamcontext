@@ -26,6 +26,8 @@ from streamcontext.logging import get_logger
 from streamcontext.sink import VectorSink, build_sink
 from streamcontext.types import KafkaMessage, VectorRecord
 
+__all__ = ["Pipeline", "build_and_run"]
+
 log = get_logger("streamcontext.pipeline")
 
 
@@ -133,7 +135,6 @@ class Pipeline:
 
         batch: list[KafkaMessage] = []
         batch_started_at: float | None = None
-        ticker_task: asyncio.Task[None] | None = None
         report_task = asyncio.create_task(self._throughput_reporter())
 
         async def _flush_due() -> None:
@@ -170,10 +171,6 @@ class Pipeline:
             report_task.cancel()
             with suppress(asyncio.CancelledError):
                 await report_task
-            if ticker_task is not None:
-                ticker_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await ticker_task
             await self._consumer.stop()
             await self._sink.close()
 
