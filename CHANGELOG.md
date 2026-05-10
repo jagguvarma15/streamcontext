@@ -2,7 +2,27 @@
 
 All notable changes to streamcontext are documented here. Format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.1.0] — Week 1 cut
+## [0.1.1] - Pre-MCP audit cut
+
+Driven by `docs/audit-v0.1.md` ahead of v0.2's MCP work. Four block-Week-2 issues fixed; others tracked.
+
+### Added
+- `streamcontext.errors` module with `ConfigurationError` and `PipelineFatalError`.
+- `streamcontext.redaction.redact()` recursive helper.
+- `SC_PAYLOAD_REDACT_FIELDS` (csv) and `SC_PAYLOAD_INCLUDE_HEADERS` (bool, default false) settings. Headers no longer flow into the vector store payload by default.
+- Startup validation that the embedder's actual output dim matches `SC_QDRANT_VECTOR_DIM`. Mismatch now raises `ConfigurationError` and exits 78 (sysexits `EX_CONFIG`) instead of crashing mid-batch.
+- Process-alive healthcheck for the gateway service in `docker-compose.yml`. Runtime image installs `procps` for `pgrep`.
+- Tests for redaction (nested dicts and lists), header inclusion toggle, dim validation, and the new fatal-halt path.
+- `docs/audit-v0.1.md` covering security and gap findings, with categorization (block / fix in v0.2 / defer / resolved).
+
+### Changed
+- Pipeline now raises `PipelineFatalError` and halts on persistent embed/sink/commit failure instead of silently dropping the batch and advancing past it on the next successful batch.
+- `_build_record` signature now requires the redaction set and a header-inclusion flag.
+
+### Fixed
+- Silent batch loss when retries are exhausted (S2 in `audit-v0.1.md`).
+
+## [0.1.0] - Week 1 cut
 
 First public alpha. Streaming sink only — MCP server lands in v0.2.
 

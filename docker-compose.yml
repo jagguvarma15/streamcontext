@@ -105,4 +105,12 @@ services:
     volumes:
       # Cache HF model weights across restarts so cold start is fast.
       - ./.data/hf-cache:/home/streamcontext/.cache
+    healthcheck:
+      # Process-alive check until the gateway exposes /health (Day 5).
+      # The image installs procps for pgrep in the runtime stage.
+      test: ["CMD-SHELL", "pgrep -f 'streamcontext.main' >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 60s
     restart: unless-stopped

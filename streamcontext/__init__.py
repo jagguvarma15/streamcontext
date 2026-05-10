@@ -1,3 +1,3 @@
-"""streamcontext — turn your Kafka cluster into queryable AI context."""
+"""streamcontext - turn your Kafka cluster into queryable AI context."""
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

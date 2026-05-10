@@ -1,14 +1,17 @@
 """Entrypoint for the streamcontext gateway.
 
-Wires config → consumer → embedder → sink → pipeline, then runs until SIGTERM.
-The actual pipeline implementation lands in Day 3.
+Loads config, configures logging, and runs the pipeline until SIGTERM or a
+fatal error. Fatal errors exit non-zero so process supervisors (compose,
+systemd, k8s) can react.
 """
 
 from __future__ import annotations
 
 import asyncio
+import sys
 
 from streamcontext.config import load_settings
+from streamcontext.errors import ConfigurationError, PipelineFatalError
 from streamcontext.logging import configure_logging, get_logger
 
 
@@ -21,10 +24,10 @@ async def _amain() -> None:
         topics=settings.topics_list,
         embedder=settings.embedder_provider,
         sink=settings.sink_provider,
+        redact_fields=sorted(settings.redact_fields_set),
+        include_headers=settings.payload_include_headers,
     )
 
-    # Pipeline assembly arrives in Day 3. For now this is a stub that proves
-    # config loading and logging work end to end.
     from streamcontext.pipeline import build_and_run
 
     await build_and_run(settings)
@@ -37,7 +40,16 @@ def run() -> None:
         uvloop.install()
     except ImportError:
         pass
-    asyncio.run(_amain())
+    try:
+        asyncio.run(_amain())
+    except ConfigurationError as exc:
+        # Configuration errors are operator-fixable. Print clearly and exit 78
+        # (sysexits.h EX_CONFIG) so supervisors can distinguish from crashes.
+        print(f"streamcontext: configuration error: {exc}", file=sys.stderr)
+        sys.exit(78)
+    except PipelineFatalError as exc:
+        print(f"streamcontext: pipeline halted: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

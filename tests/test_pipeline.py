@@ -22,7 +22,9 @@ import pytest
 
 from streamcontext.config import Settings
 from streamcontext.embedder import message_to_text
-from streamcontext.pipeline import Pipeline, _build_record, _max_offsets
+from streamcontext.errors import ConfigurationError, PipelineFatalError
+from streamcontext.pipeline import Pipeline, _build_record, _max_offsets, _validate_dim
+from streamcontext.redaction import redact
 from streamcontext.sink import stable_uuid
 from streamcontext.types import KafkaMessage, VectorRecord
 
@@ -88,13 +90,80 @@ def test_max_offsets_picks_highest_per_partition() -> None:
 
 def test_build_record_preserves_metadata() -> None:
     m = _msg("orders", 1, 42, {"order_id": "abc", "total": 99.5})
-    rec = _build_record(m, [0.1, 0.2, 0.3])
+    rec = _build_record(m, [0.1, 0.2, 0.3], frozenset(), include_headers=False)
     assert rec.id == "orders:1:42"
     assert rec.vector == [0.1, 0.2, 0.3]
     assert rec.payload["topic"] == "orders"
     assert rec.payload["partition"] == 1
     assert rec.payload["offset"] == 42
     assert rec.payload["value"]["order_id"] == "abc"
+    assert "headers" not in rec.payload
+
+
+def test_build_record_redacts_value_and_drops_headers_by_default() -> None:
+    m = KafkaMessage(
+        topic="orders",
+        partition=0,
+        offset=1,
+        timestamp_ms=0,
+        key=None,
+        headers={"authorization": "Bearer secret"},
+        value={"order_id": "abc", "email": "a@b.co", "items": [{"sku": "x", "email": "leak@b.co"}]},
+    )
+    rec = _build_record(m, [0.0], frozenset({"email"}), include_headers=False)
+    assert "email" not in rec.payload["value"]
+    assert rec.payload["value"]["items"][0] == {"sku": "x"}
+    assert "headers" not in rec.payload
+
+
+def test_build_record_includes_headers_when_enabled_and_redacts_them() -> None:
+    m = KafkaMessage(
+        topic="orders",
+        partition=0,
+        offset=1,
+        timestamp_ms=0,
+        key=None,
+        headers={"trace_id": "t-1", "authorization": "Bearer secret"},
+        value={"order_id": "abc"},
+    )
+    rec = _build_record(m, [0.0], frozenset({"authorization"}), include_headers=True)
+    assert rec.payload["headers"] == {"trace_id": "t-1"}
+
+
+def test_redact_walks_nested_structures() -> None:
+    src = {
+        "name": "Alex",
+        "email": "a@b.co",
+        "addresses": [{"line1": "1 main", "email": "x@y.co"}],
+        "meta": {"email": "z@w.co", "kept": True},
+    }
+    out = redact(src, frozenset({"email"}))
+    assert "email" not in out
+    assert "email" not in out["addresses"][0]
+    assert "email" not in out["meta"]
+    assert out["meta"]["kept"] is True
+    # Original is not mutated.
+    assert src["email"] == "a@b.co"
+
+
+def test_redact_noop_when_field_set_empty() -> None:
+    src = {"a": 1, "b": {"c": 2}}
+    assert redact(src, frozenset()) is src
+
+
+def test_validate_dim_raises_on_mismatch() -> None:
+    with pytest.raises(ConfigurationError):
+        _validate_dim(embedder_dim=768, settings_dim=384)
+
+
+def test_validate_dim_passes_when_equal() -> None:
+    _validate_dim(embedder_dim=384, settings_dim=384)  # no raise
+
+
+def test_redaction_settings_split() -> None:
+    s = Settings(payload_redact_fields="email, phone , ssn")
+    assert s.redact_fields_set == frozenset({"email", "phone", "ssn"})
+    assert Settings(payload_redact_fields="").redact_fields_set == frozenset()
 
 
 # ---------- Pipeline behavior with fakes ----------
@@ -169,6 +238,36 @@ async def test_pipeline_batches_and_commits_with_fakes() -> None:
     assert consumer.committed
     # Sink readiness was checked before any upsert
     assert sink.ready
+
+
+class AlwaysFailingEmbedder:
+    """Embedder that raises on every call — exercises the fatal-halt path."""
+
+    dim = 4
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        raise RuntimeError("embedder is down")
+
+
+@pytest.mark.asyncio
+async def test_pipeline_halts_on_persistent_flush_failure() -> None:
+    """A batch that can't be embedded must NOT advance offsets past it.
+
+    The bug being guarded against: silent batch loss when the loop continues
+    past a failed flush and a later successful batch commits a higher offset.
+    """
+    msgs = [_msg("orders", 0, i, {"i": i}) for i in range(5)]
+    consumer = FakeConsumer(msgs)
+    sink = FakeSink()
+    p = Pipeline(
+        consumer, AlwaysFailingEmbedder(), sink, batch_size=2, flush_interval_sec=0.05
+    )
+    with pytest.raises(PipelineFatalError):
+        await p.run()
+    # Nothing committed — offsets stay where they were so a restart re-reads.
+    assert consumer.committed == []
+    # Nothing leaked into the sink either.
+    assert sink.records == []
 
 
 # ---------- Integration test (opt-in) ----------
