@@ -2,6 +2,27 @@
 
 All notable changes to streamcontext are documented here. Format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0a1] - MCP server foundation
+
+First slice of v0.2: a separate MCP-server process that exposes the streamcontext vector store as agent-callable tools.
+
+### Added
+- `streamcontext.mcp_search.SearchEngine` - pure search logic decoupled from the MCP transport so it is unit-testable with fakes.
+- `streamcontext.mcp_server.build_server` - FastMCP wrapper exposing `search_events(query, limit?, topic?, time_range_minutes?, score_threshold?)`. Returns `SearchResponse` or structured `ToolError`. Per-tool wall-clock timeout configurable via `SC_MCP_TOOL_TIMEOUT_SEC`.
+- `streamcontext.mcp_main` - process entrypoint. Stdio transport by default (Claude Desktop / Cursor / Cline); `--transport sse --host --port` for HTTP hosts.
+- `streamcontext.mcp_models` - Pydantic response schemas (`EventCoord`, `EventResult`, `SearchResponse`, `ToolError`).
+- Topic allowlist enforcement at the engine layer (`SC_MCP_TOPIC_ALLOWLIST`). Off-allowlist topics are rewritten to a sentinel filter that cannot match anything, so responses cannot leak that the topic exists.
+- Server-side caps: `SC_MCP_MAX_RESULTS`, `SC_MCP_MAX_TIME_RANGE_MINUTES`. Inputs above the cap are clamped (not rejected) and `truncated=true` is set on the response.
+- `docs/mcp-setup.md` with the `claude_desktop_config.json` block, debugging notes, and SSE instructions.
+- Unit tests for engine input clamping, topic-allowlist enforcement, time-range translation, score threshold pass-through, blank-query short-circuit.
+- `streamcontext-mcp` console script.
+
+### Changed
+- `docs/architecture.md` rewritten around the two-process picture (ingestion + MCP), with the topic-allowlist and payload-redaction reasoning called out.
+
+### Notes
+- v0.2 is alpha. Day 3 expands the tool surface (`list_topics`, `describe_topic`, `find_similar_events`). Day 4 adds payload indexes for fast filter+vector search and MMR. Day 5 adds rate limiting and the embedding LRU. Day 6 ships docs and `docs/security.md`. The full plan lives in the Week 2 document.
+
 ## [0.1.1] - Pre-MCP audit cut
 
 Driven by `docs/audit-v0.1.md` ahead of v0.2's MCP work. Four block-Week-2 issues fixed; others tracked.

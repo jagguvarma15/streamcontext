@@ -1,6 +1,6 @@
 [project]
 name = "streamcontext"
-version = "0.1.1"
+version = "0.2.0a1"
 description = "The semantic gateway between Kafka and AI agents. Stream events into vector context."
 readme = "README.md"
 license = { text = "MIT" }
@@ -22,6 +22,7 @@ dependencies = [
     "aiokafka>=0.11.0",
     "confluent-kafka[avro,schemaregistry]>=2.5.0",
     "fastavro>=1.9.0",
+    "fastmcp>=2.0.0",
     "pydantic>=2.7.0",
     "pydantic-settings>=2.3.0",
     "qdrant-client>=1.10.0",
@@ -43,6 +44,7 @@ dev = [
 
 [project.scripts]
 streamcontext = "streamcontext.main:run"
+streamcontext-mcp = "streamcontext.mcp_main:run"
 
 [project.urls]
 Homepage = "https://github.com/jagadeshvarma/streamcontext"

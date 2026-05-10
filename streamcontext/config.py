@@ -55,6 +55,21 @@ class Settings(BaseSettings):
     # because headers commonly carry auth tokens or trace context.
     payload_include_headers: bool = False
 
+    # --- MCP server (v0.2) ---
+    # Comma-separated allowlist of topic names the MCP server is permitted to
+    # search. If empty, the server logs a startup warning and applies no topic
+    # restriction. Operators are expected to set this to the subset of topics
+    # they want exposed to agents — usually the ingested topics minus anything
+    # sensitive.
+    mcp_topic_allowlist: str = ""
+    # Hard cap on the `limit` argument any MCP search tool will accept.
+    mcp_max_results: int = Field(default=100, ge=1, le=1000)
+    # Hard cap on time-range filters in minutes (default: 7 days).
+    mcp_max_time_range_minutes: int = Field(default=10_080, ge=1)
+    # Hard cap on per-tool wall time. Tools time out and return a structured
+    # error rather than hanging the agent.
+    mcp_tool_timeout_sec: float = Field(default=5.0, gt=0)
+
     # --- Observability ---
     log_level: str = "INFO"
     log_json: bool = True
@@ -66,6 +81,10 @@ class Settings(BaseSettings):
     @property
     def redact_fields_set(self) -> frozenset[str]:
         return frozenset(f.strip() for f in self.payload_redact_fields.split(",") if f.strip())
+
+    @property
+    def mcp_topic_allowlist_set(self) -> frozenset[str]:
+        return frozenset(t.strip() for t in self.mcp_topic_allowlist.split(",") if t.strip())
 
 
 def load_settings() -> Settings:
