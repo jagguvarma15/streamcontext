@@ -2,6 +2,23 @@
 
 All notable changes to streamcontext are documented here. Format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0a2] - Expanded MCP tool surface
+
+Three more agent-callable tools and the Qdrant indexes that make them fast.
+
+### Added
+- `list_topics` MCP tool. Returns one `TopicInfo` per allowlisted topic (or per discovered topic when no allowlist is set), with approximate count and oldest/newest timestamps.
+- `describe_topic` MCP tool. Returns count, time window, sample records, and a flattened Avro schema summary fetched from Schema Registry when reachable.
+- `find_similar_events` MCP tool. Given a `topic:partition:offset` reference, retrieves the stored vector and runs a similarity search, excluding the reference itself. Cross-allowlist queries return `not_found` rather than leaking topic existence.
+- `EventNotFoundError` and `_parse_reference_id` in `mcp_search.py`.
+- `TopicInfo`, `TopicsResponse`, `SchemaField`, `SchemaSummary`, `TopicDescription` Pydantic models.
+- Optional `SchemaRegistryClient` dependency on `SearchEngine`. `mcp_main.py` probes Schema Registry at startup; failures degrade `describe_topic.schema_summary` to `null` rather than failing the tool.
+- `QdrantSink._ensure_core_indexes` creates idempotent payload indexes for `topic`, `partition`, and `timestamp_ms` so chronological scrolls and per-topic counts run at index speed.
+- Tests for reference-id parsing, allowlisted vs discovered topic listing, off-allowlist describe (no leak), schema flattening, similar-events self-exclusion, similar-events off-allowlist behaviour.
+
+### Changed
+- Server `instructions` now describe a four-tool workflow (`list_topics` -> `describe_topic` -> `search_events` / `find_similar_events`) so tool-using agents pick the right entry point.
+
 ## [0.2.0a1] - MCP server foundation
 
 First slice of v0.2: a separate MCP-server process that exposes the streamcontext vector store as agent-callable tools.

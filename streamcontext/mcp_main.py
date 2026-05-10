@@ -20,8 +20,27 @@ from streamcontext.config import load_settings
 from streamcontext.embedder import build_embedder
 from streamcontext.errors import ConfigurationError
 from streamcontext.logging import configure_logging, get_logger
-from streamcontext.mcp_search import SearchEngine
+from streamcontext.mcp_search import SearchEngine, _SchemaRegistryLike
 from streamcontext.mcp_server import build_server, warn_if_allowlist_empty
+
+
+def _try_schema_registry(url: str) -> _SchemaRegistryLike | None:
+    """Best-effort SR client construction. None on import or connect failure."""
+    log = get_logger("streamcontext.mcp")
+    try:
+        from confluent_kafka.schema_registry import SchemaRegistryClient
+    except ImportError:
+        log.debug("mcp.schema_registry.unavailable", reason="confluent_kafka not installed")
+        return None
+    try:
+        client = SchemaRegistryClient({"url": url})
+        # No-op probe: list subjects. If the host is unreachable this raises.
+        client.get_subjects()
+        log.info("mcp.schema_registry.connected", url=url)
+        return client
+    except Exception as exc:
+        log.warning("mcp.schema_registry.unreachable", url=url, error=str(exc))
+        return None
 
 
 async def _prepare() -> tuple[object, object]:
@@ -43,6 +62,7 @@ async def _prepare() -> tuple[object, object]:
         )
 
     client = AsyncQdrantClient(url=settings.qdrant_url)
+    sr_client = _try_schema_registry(settings.schema_registry_url)
     engine = SearchEngine(
         embedder=embedder,
         client=client,
@@ -50,6 +70,7 @@ async def _prepare() -> tuple[object, object]:
         topic_allowlist=settings.mcp_topic_allowlist_set,
         max_results=settings.mcp_max_results,
         max_time_range_minutes=settings.mcp_max_time_range_minutes,
+        schema_registry=sr_client,
     )
     warn_if_allowlist_empty(settings)
     log.info(
@@ -62,6 +83,7 @@ async def _prepare() -> tuple[object, object]:
         max_results=settings.mcp_max_results,
         max_time_range_minutes=settings.mcp_max_time_range_minutes,
         tool_timeout_sec=settings.mcp_tool_timeout_sec,
+        schema_registry=bool(sr_client),
     )
     mcp = build_server(engine, settings)
     return mcp, client

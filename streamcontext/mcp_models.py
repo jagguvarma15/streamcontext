@@ -53,6 +53,69 @@ class SearchResponse(BaseModel):
     results: list[EventResult]
 
 
+class TopicInfo(BaseModel):
+    """Coarse stats for one ingested topic."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    count: int = Field(ge=0, description="Approximate number of records in the vector store.")
+    oldest_timestamp_ms: int | None = Field(
+        default=None, description="Earliest record timestamp in this topic, if known."
+    )
+    newest_timestamp_ms: int | None = Field(
+        default=None, description="Most recent record timestamp in this topic, if known."
+    )
+
+
+class TopicsResponse(BaseModel):
+    """Top-level response for `list_topics`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    topics: list[TopicInfo]
+
+
+class SchemaField(BaseModel):
+    """One field in an Avro record schema, flattened for agent consumption."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    type: str
+    doc: str | None = None
+
+
+class SchemaSummary(BaseModel):
+    """The latest registered Avro value-schema for a topic, summarized."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str
+    version: int | None = None
+    schema_id: int | None = None
+    fields: list[SchemaField]
+
+
+class TopicDescription(BaseModel):
+    """Top-level response for `describe_topic`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    count: int = Field(ge=0)
+    oldest_timestamp_ms: int | None = None
+    newest_timestamp_ms: int | None = None
+    schema_summary: SchemaSummary | None = Field(
+        default=None,
+        description=(
+            "Latest registered value-schema for this topic. None if Schema "
+            "Registry is unreachable or no schema is registered."
+        ),
+    )
+    samples: list[EventResult] = Field(default_factory=list)
+
+
 class ToolError(BaseModel):
     """Structured error returned by tools instead of raising.
 
