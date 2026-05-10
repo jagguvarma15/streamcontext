@@ -53,6 +53,16 @@ class QdrantSink:
         self._client = AsyncQdrantClient(url=url)
         self._ready = False
 
+    # Core payload fields the MCP tools always filter or order by. Created
+    # idempotently at startup so the read path doesn't pay a full-collection
+    # scan for topic counts or chronological scrolls. User-configured field
+    # indexes (status, region, etc.) land in v0.2.x.
+    _CORE_INDEXES: tuple[tuple[str, rest.PayloadSchemaType], ...] = (
+        ("topic", rest.PayloadSchemaType.KEYWORD),
+        ("partition", rest.PayloadSchemaType.INTEGER),
+        ("timestamp_ms", rest.PayloadSchemaType.INTEGER),
+    )
+
     async def ensure_ready(self) -> None:
         if self._ready:
             return
@@ -65,7 +75,22 @@ class QdrantSink:
             )
         else:
             log.info("sink.qdrant.collection_ready", collection=self._collection)
+        await self._ensure_core_indexes()
         self._ready = True
+
+    async def _ensure_core_indexes(self) -> None:
+        for field, schema in self._CORE_INDEXES:
+            try:
+                await self._client.create_payload_index(
+                    collection_name=self._collection,
+                    field_name=field,
+                    field_schema=schema,
+                )
+                log.info("sink.qdrant.index_created", field=field)
+            except Exception as exc:
+                # Qdrant returns a non-fatal error when the index already
+                # exists; treat anything here as best-effort.
+                log.debug("sink.qdrant.index_skip", field=field, error=str(exc))
 
     async def upsert(self, records: list[VectorRecord]) -> None:
         if not records:
