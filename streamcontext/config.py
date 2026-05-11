@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # Whether to copy Kafka headers into the vector store payload. Off by default
     # because headers commonly carry auth tokens or trace context.
     payload_include_headers: bool = False
+    # Comma-separated value-level fields to keyword-index in the vector store.
+    # Names refer to keys inside the message value (e.g. "status,region"); the
+    # sink prefixes them with "value." automatically when creating the index.
+    # Without an index, filters still work but run a full-collection scan.
+    payload_index_fields: str = ""
 
     # --- MCP server (v0.2) ---
     # Comma-separated allowlist of topic names the MCP server is permitted to
@@ -81,6 +86,10 @@ class Settings(BaseSettings):
     @property
     def redact_fields_set(self) -> frozenset[str]:
         return frozenset(f.strip() for f in self.payload_redact_fields.split(",") if f.strip())
+
+    @property
+    def index_fields_list(self) -> list[str]:
+        return [f.strip() for f in self.payload_index_fields.split(",") if f.strip()]
 
     @property
     def mcp_topic_allowlist_set(self) -> frozenset[str]:
