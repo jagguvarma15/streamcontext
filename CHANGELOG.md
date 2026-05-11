@@ -2,6 +2,22 @@
 
 All notable changes to streamcontext are documented here. Format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0a3] - Structured filters, value-level indexes, MMR rerank
+
+Day 4 of the Week 2 plan. Makes search results good, not just present.
+
+### Added
+- `FilterClause` Pydantic model (`field`, plus exactly one of `eq`, `in_values`, or `gte`/`lte`).
+- `search_events` accepts a `filters` argument (max 10 clauses) and a `diverse` boolean. Filters AND together with the existing topic / time-range constraints.
+- Field-name normalization: user-facing field names like `status` or `region` are auto-prefixed with `value.` so agents do not need to know the payload layout. Core Kafka coordinates and explicit dotted paths pass through unchanged.
+- `SC_PAYLOAD_INDEX_FIELDS` config (csv). The sink creates idempotent `value.<field>` keyword indexes at startup so filter+vector queries run at index speed.
+- Maximal-marginal-relevance rerank (`_mmr_rerank`). When `diverse=true`, the engine pulls 3x candidates with vectors and selects the top-K balancing relevance against per-result novelty (lambda=0.7).
+- `docs/example-conversations.md` walking three adversarial query patterns plus a follow-up similar-events flow.
+- Tests for field normalization, the three FilterClause shapes (`eq`, `in_values`, `gte`/`lte`), filter-clause rejection on empty inputs, structured filters AND'd with time-range, MMR diversity vs. duplicate fallback, MMR's relevance-only fallback when vectors are missing.
+
+### Notes
+- An empty `SC_PAYLOAD_INDEX_FIELDS` still works; filters fall back to full-collection scans. The MCP tool logs `n_filters` and `diverse` so slow queries are easy to spot.
+
 ## [0.2.0a2] - Expanded MCP tool surface
 
 Three more agent-callable tools and the Qdrant indexes that make them fast.

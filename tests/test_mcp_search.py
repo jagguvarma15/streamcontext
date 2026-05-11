@@ -12,9 +12,14 @@ from typing import Any
 import pytest
 from qdrant_client.http import models as rest
 
+from streamcontext.mcp_models import FilterClause
 from streamcontext.mcp_search import (
     EventNotFoundError,
     SearchEngine,
+    _clause_to_qdrant,
+    _cosine,
+    _mmr_rerank,
+    _normalize_field,
     _parse_reference_id,
 )
 from streamcontext.sink import stable_uuid
@@ -505,3 +510,127 @@ async def test_find_similar_events_off_allowlist_is_not_found() -> None:
     )
     with pytest.raises(EventNotFoundError):
         await engine.find_similar_events(reference_id="secrets:0:1")
+
+
+# ---------- Day 4: structured filters, field normalization, MMR ----------
+
+
+def test_normalize_field_prefixes_value_for_user_fields() -> None:
+    assert _normalize_field("status") == "value.status"
+    assert _normalize_field("region") == "value.region"
+    # Core Kafka coordinates stay top-level.
+    assert _normalize_field("topic") == "topic"
+    assert _normalize_field("timestamp_ms") == "timestamp_ms"
+    # Explicit paths are passed through unchanged.
+    assert _normalize_field("value.items.sku") == "value.items.sku"
+
+
+def test_clause_to_qdrant_eq() -> None:
+    fc = FilterClause(field="status", eq="paid")
+    cond = _clause_to_qdrant(fc)
+    assert cond.key == "value.status"
+    assert isinstance(cond.match, rest.MatchValue)
+    assert cond.match.value == "paid"
+
+
+def test_clause_to_qdrant_in_values() -> None:
+    fc = FilterClause(field="region", in_values=["US_WEST", "US_EAST"])
+    cond = _clause_to_qdrant(fc)
+    assert cond.key == "value.region"
+    assert isinstance(cond.match, rest.MatchAny)
+    assert sorted(cond.match.any) == ["US_EAST", "US_WEST"]
+
+
+def test_clause_to_qdrant_range() -> None:
+    fc = FilterClause(field="total", gte=100.0, lte=500.0)
+    cond = _clause_to_qdrant(fc)
+    assert cond.key == "value.total"
+    assert isinstance(cond.range, rest.Range)
+    assert cond.range.gte == 100.0
+    assert cond.range.lte == 500.0
+
+
+def test_clause_to_qdrant_rejects_empty() -> None:
+    with pytest.raises(ValueError):
+        _clause_to_qdrant(FilterClause(field="status"))
+
+
+@pytest.mark.asyncio
+async def test_search_events_combines_structured_filters() -> None:
+    client = CapturingClient(hits=[])
+    engine = SearchEngine(FakeEmbedder(), client, collection="c")
+    await engine.search_events(
+        query="orders",
+        filters=[
+            FilterClause(field="status", eq="paid"),
+            FilterClause(field="region", in_values=["US_WEST"]),
+        ],
+        time_range_minutes=60,
+    )
+    flt = client.last_kwargs["query_filter"]
+    keys = sorted(getattr(c, "key", None) for c in flt.must)
+    # timestamp_ms from time_range, value.status and value.region from filters.
+    assert keys == ["timestamp_ms", "value.region", "value.status"]
+
+
+def test_cosine_basic() -> None:
+    assert _cosine([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
+    assert _cosine([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
+    # Empty / mismatched / zero-norm inputs return 0 not NaN.
+    assert _cosine([], [1.0]) == 0.0
+    assert _cosine([0.0, 0.0], [1.0, 0.0]) == 0.0
+
+
+@dataclass
+class FakeHitWithVec:
+    score: float
+    vector: list[float]
+    payload: dict[str, Any]
+
+
+def test_mmr_rerank_prefers_diverse_over_redundant() -> None:
+    """Two near-duplicate top hits plus one different hit. MMR should pick
+    one of the duplicates, then the different one - not both duplicates."""
+    q = [1.0, 0.0]
+    a = FakeHitWithVec(score=0.95, vector=[1.0, 0.0], payload={"id": "a"})
+    a_dup = FakeHitWithVec(score=0.94, vector=[0.99, 0.01], payload={"id": "a_dup"})
+    b = FakeHitWithVec(score=0.80, vector=[0.0, 1.0], payload={"id": "b"})
+    out = _mmr_rerank(query_vector=q, hits=[a, a_dup, b], k=2, lambda_=0.5)
+    picked_ids = [h.payload["id"] for h in out]
+    # a comes first (highest relevance). The second slot should prefer b over
+    # a_dup because a_dup is too similar to already-picked a.
+    assert picked_ids[0] == "a"
+    assert picked_ids[1] == "b"
+
+
+def test_mmr_rerank_falls_back_to_relevance_when_vectors_missing() -> None:
+    a = FakeHitWithVec(score=0.9, vector=None, payload={"id": "a"})  # type: ignore[arg-type]
+    b = FakeHitWithVec(score=0.7, vector=None, payload={"id": "b"})  # type: ignore[arg-type]
+    out = _mmr_rerank(query_vector=[1.0, 0.0], hits=[a, b], k=2, lambda_=0.5)
+    assert [h.payload["id"] for h in out] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_search_events_diverse_fetches_extra_candidates_with_vectors() -> None:
+    """When diverse=True, the engine asks Qdrant for 3x candidates with vectors."""
+    client = CapturingClient(
+        hits=[
+            FakeHitWithVec(score=0.9, vector=[1.0, 0.0], payload={"topic": "orders", "partition": 0, "offset": 1, "timestamp_ms": 0, "value": {}}),
+            FakeHitWithVec(score=0.8, vector=[0.0, 1.0], payload={"topic": "orders", "partition": 0, "offset": 2, "timestamp_ms": 0, "value": {}}),
+        ]
+    )
+    engine = SearchEngine(FakeEmbedder(), client, collection="c")
+    await engine.search_events(query="x", limit=2, diverse=True)
+    # FakeEmbedder.dim is 4, but we don't care here; what matters is the call.
+    assert client.last_kwargs["limit"] == 6  # 2 * 3
+    assert client.last_kwargs["with_vectors"] is True
+
+
+@pytest.mark.asyncio
+async def test_search_events_non_diverse_no_with_vectors() -> None:
+    client = CapturingClient(hits=[])
+    engine = SearchEngine(FakeEmbedder(), client, collection="c")
+    await engine.search_events(query="x", limit=5)
+    assert client.last_kwargs["limit"] == 5
+    # with_vectors should not be set (or set to False) when diverse=False
+    assert client.last_kwargs.get("with_vectors") in (None, False)

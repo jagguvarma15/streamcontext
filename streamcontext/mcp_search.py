@@ -17,6 +17,7 @@ from streamcontext.logging import get_logger
 from streamcontext.mcp_models import (
     EventCoord,
     EventResult,
+    FilterClause,
     SchemaField,
     SchemaSummary,
     SearchResponse,
@@ -27,6 +28,38 @@ from streamcontext.mcp_models import (
 from streamcontext.sink import stable_uuid
 
 log = get_logger("streamcontext.mcp.search")
+
+
+# Fields that live at the top level of the Qdrant payload (set by the pipeline).
+# Anything else is treated as a value-level field and prefixed with "value.".
+_CORE_PAYLOAD_FIELDS: frozenset[str] = frozenset(
+    {"topic", "partition", "offset", "timestamp_ms", "key"}
+)
+
+
+def _normalize_field(field: str) -> str:
+    """Map a user-facing field name to its Qdrant payload path."""
+    if field in _CORE_PAYLOAD_FIELDS:
+        return field
+    if field.startswith("value.") or "." in field:
+        # Caller already passed an explicit path; trust them.
+        return field
+    return f"value.{field}"
+
+
+def _clause_to_qdrant(clause: FilterClause) -> rest.FieldCondition:
+    key = _normalize_field(clause.field)
+    if clause.eq is not None:
+        return rest.FieldCondition(key=key, match=rest.MatchValue(value=clause.eq))
+    if clause.in_values is not None:
+        return rest.FieldCondition(key=key, match=rest.MatchAny(any=list(clause.in_values)))
+    if clause.gte is not None or clause.lte is not None:
+        return rest.FieldCondition(
+            key=key, range=rest.Range(gte=clause.gte, lte=clause.lte)
+        )
+    raise ValueError(
+        f"FilterClause for field {clause.field!r} must set one of eq, in_values, or gte/lte."
+    )
 
 
 class EventNotFoundError(StreamcontextError):
@@ -111,7 +144,10 @@ class SearchEngine:
         self._schema_registry = schema_registry
 
     def _build_filter(
-        self, topic: str | None, time_range_minutes: int | None
+        self,
+        topic: str | None,
+        time_range_minutes: int | None,
+        filters: list[FilterClause] | None = None,
     ) -> rest.Filter | None:
         clauses: list[rest.FieldCondition] = []
 
@@ -142,6 +178,10 @@ class SearchEngine:
                 rest.FieldCondition(key="timestamp_ms", range=rest.Range(gte=cutoff_ms))
             )
 
+        if filters:
+            for clause in filters:
+                clauses.append(_clause_to_qdrant(clause))
+
         if not clauses:
             return None
         return rest.Filter(must=clauses)
@@ -153,6 +193,8 @@ class SearchEngine:
         topic: str | None = None,
         time_range_minutes: int | None = None,
         score_threshold: float | None = None,
+        filters: list[FilterClause] | None = None,
+        diverse: bool = False,
     ) -> SearchResponse:
         if not query or not query.strip():
             return SearchResponse(query=query, total=0, results=[])
@@ -162,20 +204,30 @@ class SearchEngine:
         truncated = clamped_limit != requested_limit
 
         [vector] = await self._embedder.embed([query])
-        flt = self._build_filter(topic, time_range_minutes)
+        flt = self._build_filter(topic, time_range_minutes, filters=filters)
+
+        # For MMR we pull a larger candidate pool so the rerank has room to
+        # work. 3x is the standard rule-of-thumb in the literature.
+        fetch_limit = clamped_limit * 3 if diverse else clamped_limit
 
         kwargs: dict[str, Any] = {
             "collection_name": self._collection,
             "query_vector": vector,
-            "limit": clamped_limit,
+            "limit": fetch_limit,
             "query_filter": flt,
             "with_payload": True,
         }
+        if diverse:
+            kwargs["with_vectors"] = True
         if score_threshold is not None:
             kwargs["score_threshold"] = score_threshold
 
         hits = await self._client.search(**kwargs)
-        results = [_hit_to_result(h) for h in hits]
+        if diverse and hits:
+            ordered = _mmr_rerank(query_vector=vector, hits=hits, k=clamped_limit)
+            results = [_hit_to_result(h) for h in ordered]
+        else:
+            results = [_hit_to_result(h) for h in hits[:clamped_limit]]
 
         log.info(
             "mcp.search_events",
@@ -184,6 +236,9 @@ class SearchEngine:
             topic=topic,
             time_range_minutes=time_range_minutes,
             score_threshold=score_threshold,
+            n_filters=len(filters) if filters else 0,
+            diverse=diverse,
+            n_candidates=len(hits),
             n_results=len(results),
             truncated=truncated,
         )
@@ -460,6 +515,70 @@ def _point_to_result(point: Any, *, fallback_score: float) -> EventResult:
     if key is not None:
         key = str(key)
     return EventResult(coord=coord, score=fallback_score, key=key, value=value)
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """Cosine similarity. Assumes inputs are non-empty and same length."""
+    if not a or len(a) != len(b):
+        return 0.0
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        na += x * x
+        nb += y * y
+    if na <= 0.0 or nb <= 0.0:
+        return 0.0
+    return dot / ((na**0.5) * (nb**0.5))
+
+
+def _mmr_rerank(
+    query_vector: list[float],
+    hits: list[Any],
+    k: int,
+    lambda_: float = 0.7,
+) -> list[Any]:
+    """Maximal Marginal Relevance rerank.
+
+    Picks `k` hits balancing relevance to the query against diversity from
+    already-selected hits. Falls back to raw order if a hit's vector is
+    missing (Qdrant didn't return it). `lambda_` close to 1 favors relevance;
+    closer to 0 favors diversity.
+    """
+    if k <= 0:
+        return []
+    candidates = list(hits)
+    if not candidates:
+        return []
+    selected: list[Any] = []
+    selected_vectors: list[list[float]] = []
+
+    while candidates and len(selected) < k:
+        best_idx = -1
+        best_score = float("-inf")
+        for i, h in enumerate(candidates):
+            relevance = float(getattr(h, "score", 0.0))
+            vec = getattr(h, "vector", None)
+            if vec is None:
+                # No vector returned - fall back to relevance-only ranking
+                # for this candidate.
+                mmr_score = relevance
+            else:
+                if selected_vectors:
+                    max_sim = max(_cosine(vec, sv) for sv in selected_vectors)
+                else:
+                    max_sim = 0.0
+                mmr_score = lambda_ * relevance - (1.0 - lambda_) * max_sim
+            if mmr_score > best_score:
+                best_score = mmr_score
+                best_idx = i
+        picked = candidates.pop(best_idx)
+        selected.append(picked)
+        v = getattr(picked, "vector", None)
+        if v is not None:
+            selected_vectors.append(list(v))
+    return selected
 
 
 def _hit_to_result(hit: Any) -> EventResult:

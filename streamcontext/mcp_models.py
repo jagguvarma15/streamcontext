@@ -39,6 +39,29 @@ class EventResult(BaseModel):
     )
 
 
+class FilterClause(BaseModel):
+    """One field-level filter applied alongside the semantic match.
+
+    Field names refer to keys inside the message value (e.g. "status",
+    "region"). Core Kafka coordinates (`topic`, `partition`, `offset`,
+    `timestamp_ms`, `key`) may also be filtered here, though `topic` and
+    `time_range_minutes` have dedicated arguments on the tool.
+
+    Exactly one of `eq`, `in_values`, or a range (`gte`/`lte`) should be set.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: str = Field(min_length=1, max_length=100)
+    eq: str | int | float | bool | None = None
+    in_values: list[str | int | float | bool] | None = Field(
+        default=None,
+        description="Match if the field equals any of these values.",
+    )
+    gte: float | None = Field(default=None, description="Inclusive lower bound (numeric).")
+    lte: float | None = Field(default=None, description="Inclusive upper bound (numeric).")
+
+
 class SearchResponse(BaseModel):
     """Top-level response for `search_events`."""
 

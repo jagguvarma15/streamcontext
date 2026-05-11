@@ -45,6 +45,7 @@ class QdrantSink:
         collection: str,
         vector_dim: int,
         distance: rest.Distance = rest.Distance.COSINE,
+        value_index_fields: list[str] | None = None,
     ) -> None:
         self._url = url
         self._collection = collection
@@ -52,6 +53,7 @@ class QdrantSink:
         self._distance = distance
         self._client = AsyncQdrantClient(url=url)
         self._ready = False
+        self._value_index_fields = list(value_index_fields or [])
 
     # Core payload fields the MCP tools always filter or order by. Created
     # idempotently at startup so the read path doesn't pay a full-collection
@@ -80,17 +82,25 @@ class QdrantSink:
 
     async def _ensure_core_indexes(self) -> None:
         for field, schema in self._CORE_INDEXES:
-            try:
-                await self._client.create_payload_index(
-                    collection_name=self._collection,
-                    field_name=field,
-                    field_schema=schema,
-                )
-                log.info("sink.qdrant.index_created", field=field)
-            except Exception as exc:
-                # Qdrant returns a non-fatal error when the index already
-                # exists; treat anything here as best-effort.
-                log.debug("sink.qdrant.index_skip", field=field, error=str(exc))
+            await self._create_index(field, schema)
+        # Operator-declared value-level fields (status, region, etc.) get a
+        # keyword index under their nested path so the MCP search tool's
+        # filters run at index speed.
+        for raw_field in self._value_index_fields:
+            await self._create_index(f"value.{raw_field}", rest.PayloadSchemaType.KEYWORD)
+
+    async def _create_index(self, field: str, schema: rest.PayloadSchemaType) -> None:
+        try:
+            await self._client.create_payload_index(
+                collection_name=self._collection,
+                field_name=field,
+                field_schema=schema,
+            )
+            log.info("sink.qdrant.index_created", field=field)
+        except Exception as exc:
+            # Qdrant returns a non-fatal error when the index already
+            # exists; treat anything here as best-effort.
+            log.debug("sink.qdrant.index_skip", field=field, error=str(exc))
 
     async def upsert(self, records: list[VectorRecord]) -> None:
         if not records:
@@ -116,5 +126,6 @@ def build_sink(settings: Settings) -> VectorSink:
             url=settings.qdrant_url,
             collection=settings.qdrant_collection,
             vector_dim=settings.qdrant_vector_dim,
+            value_index_fields=settings.index_fields_list,
         )
     raise ValueError(f"Unknown sink provider: {settings.sink_provider!r}")

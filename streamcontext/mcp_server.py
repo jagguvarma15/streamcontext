@@ -18,6 +18,7 @@ from pydantic import Field
 from streamcontext.config import Settings
 from streamcontext.logging import get_logger
 from streamcontext.mcp_models import (
+    FilterClause,
     SearchResponse,
     TopicDescription,
     TopicsResponse,
@@ -95,12 +96,39 @@ def build_server(engine: SearchEngine, settings: Settings) -> FastMCP:
                 description="Drop results whose cosine similarity is below this value.",
             ),
         ] = None,
+        filters: Annotated[
+            list[FilterClause] | None,
+            Field(
+                default=None,
+                max_length=10,
+                description=(
+                    "Structured filters applied alongside the semantic match. "
+                    "Field names refer to keys inside the message value (e.g. "
+                    "'status', 'region'); 'topic' and 'timestamp_ms' work too. "
+                    "Each clause uses exactly one of eq, in_values, or gte/lte. "
+                    "Add the field to SC_PAYLOAD_INDEX_FIELDS on the gateway for "
+                    "fast filtering."
+                ),
+            ),
+        ] = None,
+        diverse: Annotated[
+            bool,
+            Field(
+                default=False,
+                description=(
+                    "Apply maximal-marginal-relevance reranking so the result "
+                    "set is less repetitive. Useful when raw similarity returns "
+                    "many near-duplicates."
+                ),
+            ),
+        ] = False,
     ) -> SearchResponse | ToolError:
         """Semantic search over the streamcontext vector store.
 
         Returns Kafka records ranked by similarity to `query`, optionally
-        filtered by `topic` and `time_range_minutes`. Each result includes
-        the original record value plus its Kafka coordinates.
+        filtered by `topic`, `time_range_minutes`, and structured `filters`.
+        Each result includes the original record value plus its Kafka
+        coordinates. Set `diverse=true` to dedupe near-identical results.
         """
         try:
             return await asyncio.wait_for(
@@ -110,6 +138,8 @@ def build_server(engine: SearchEngine, settings: Settings) -> FastMCP:
                     topic=topic,
                     time_range_minutes=time_range_minutes,
                     score_threshold=score_threshold,
+                    filters=filters,
+                    diverse=diverse,
                 ),
                 timeout=timeout,
             )
