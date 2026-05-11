@@ -2,6 +2,21 @@
 
 All notable changes to streamcontext are documented here. Format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0a4] - MCP layer hardening and v0.2 audit
+
+Day 5 of the Week 2 plan. Makes the MCP server safe to expose to a real agent in a real environment.
+
+### Added
+- `streamcontext.rate_limit.TokenBucket` and `ToolRateLimiter`: per-tool token-bucket rate limiting with smooth refill. Configured via `SC_MCP_RATE_LIMIT_PER_MINUTE` (default 120/min, 0 disables). Denied calls return `ToolError(code="rate_limited")` with retry-after in seconds.
+- `streamcontext.embedder.CachedEmbedder`: LRU wrapper around the `Embedder` protocol keyed on the exact query string. Configured via `SC_MCP_EMBED_CACHE_SIZE` (default 256, 0 disables). The MCP server wraps its embedder in this automatically; the ingestion gateway does not.
+- Per-record value-size cap. Search results whose `value` JSON exceeds `SC_MCP_MAX_VALUE_BYTES` (default 8192) are replaced with a `_truncated` stub carrying `_size_bytes` and `_preview`. `EventResult.value_truncated` is the structured signal for agents.
+- `docs/audit-v0.2.md`: second-pass security and gap audit covering the MCP layer. Twelve security findings (nine resolved in v0.2.0a*, two tracked for v0.2.x, one deferred) plus an adversarial-pattern checklist.
+- Tests in `tests/test_hardening.py` for token bucket (initial burst, refill, per-tool isolation, disabled mode), cached embedder (hits, mixed batch, LRU eviction, disabled mode), value truncation (small pass-through, oversize stub, disabled mode). Integration coverage in `tests/test_mcp_search.py::test_search_events_truncates_oversize_value`.
+
+### Changed
+- `SearchEngine` takes a `max_value_bytes` parameter and applies truncation to every result it returns (`search_events`, `find_similar_events`, `describe_topic` samples).
+- `mcp_main.py` wraps the embedder in `CachedEmbedder` before passing it to the engine; startup log line now reports cache size, rate limit, value cap, and SR availability.
+
 ## [0.2.0a3] - Structured filters, value-level indexes, MMR rerank
 
 Day 4 of the Week 2 plan. Makes search results good, not just present.

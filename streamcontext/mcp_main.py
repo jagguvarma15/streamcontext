@@ -17,7 +17,7 @@ import sys
 from qdrant_client import AsyncQdrantClient
 
 from streamcontext.config import load_settings
-from streamcontext.embedder import build_embedder
+from streamcontext.embedder import CachedEmbedder, build_embedder
 from streamcontext.errors import ConfigurationError
 from streamcontext.logging import configure_logging, get_logger
 from streamcontext.mcp_search import SearchEngine, _SchemaRegistryLike
@@ -52,14 +52,15 @@ async def _prepare() -> tuple[object, object]:
     configure_logging(level=settings.log_level, json=settings.log_json)
     log = get_logger("streamcontext.mcp")
 
-    embedder = build_embedder(settings)
+    inner_embedder = build_embedder(settings)
     # Probe to lock the dim before serving the first query.
-    await embedder.embed(["__startup_dim_probe__"])
-    if embedder.dim != settings.qdrant_vector_dim:
+    await inner_embedder.embed(["__startup_dim_probe__"])
+    if inner_embedder.dim != settings.qdrant_vector_dim:
         raise ConfigurationError(
-            f"embedder produces dim {embedder.dim} but SC_QDRANT_VECTOR_DIM="
+            f"embedder produces dim {inner_embedder.dim} but SC_QDRANT_VECTOR_DIM="
             f"{settings.qdrant_vector_dim}. Set them to match."
         )
+    embedder = CachedEmbedder(inner_embedder, max_size=settings.mcp_embed_cache_size)
 
     client = AsyncQdrantClient(url=settings.qdrant_url)
     sr_client = _try_schema_registry(settings.schema_registry_url)
@@ -70,6 +71,7 @@ async def _prepare() -> tuple[object, object]:
         topic_allowlist=settings.mcp_topic_allowlist_set,
         max_results=settings.mcp_max_results,
         max_time_range_minutes=settings.mcp_max_time_range_minutes,
+        max_value_bytes=settings.mcp_max_value_bytes,
         schema_registry=sr_client,
     )
     warn_if_allowlist_empty(settings)
@@ -82,7 +84,10 @@ async def _prepare() -> tuple[object, object]:
         topic_allowlist=sorted(settings.mcp_topic_allowlist_set),
         max_results=settings.mcp_max_results,
         max_time_range_minutes=settings.mcp_max_time_range_minutes,
+        max_value_bytes=settings.mcp_max_value_bytes,
         tool_timeout_sec=settings.mcp_tool_timeout_sec,
+        rate_limit_per_minute=settings.mcp_rate_limit_per_minute,
+        embed_cache_size=settings.mcp_embed_cache_size,
         schema_registry=bool(sr_client),
     )
     mcp = build_server(engine, settings)

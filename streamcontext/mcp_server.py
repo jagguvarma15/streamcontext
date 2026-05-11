@@ -25,6 +25,7 @@ from streamcontext.mcp_models import (
     ToolError,
 )
 from streamcontext.mcp_search import EventNotFoundError, SearchEngine
+from streamcontext.rate_limit import ToolRateLimiter
 
 log = get_logger("streamcontext.mcp.server")
 
@@ -51,6 +52,17 @@ def build_server(engine: SearchEngine, settings: Settings) -> FastMCP:
     """
     mcp = FastMCP(name=SERVER_NAME, instructions=SERVER_INSTRUCTIONS)
     timeout = settings.mcp_tool_timeout_sec
+    limiter = ToolRateLimiter(settings.mcp_rate_limit_per_minute)
+
+    def _rate_limit(tool: str) -> ToolError | None:
+        ok, retry = limiter.check(tool)
+        if ok:
+            return None
+        log.warning("mcp.rate_limited", tool=tool, retry_after_sec=round(retry, 2))
+        return ToolError(
+            code="rate_limited",
+            message=f"{tool} rate-limited; retry in {retry:.1f}s.",
+        )
 
     @mcp.tool()
     async def search_events(
@@ -130,6 +142,9 @@ def build_server(engine: SearchEngine, settings: Settings) -> FastMCP:
         Each result includes the original record value plus its Kafka
         coordinates. Set `diverse=true` to dedupe near-identical results.
         """
+        denied = _rate_limit("search_events")
+        if denied is not None:
+            return denied
         try:
             return await asyncio.wait_for(
                 engine.search_events(
@@ -162,6 +177,9 @@ def build_server(engine: SearchEngine, settings: Settings) -> FastMCP:
         the oldest and newest record timestamps when known. Call this before
         `search_events` if the user names a topic you have not seen yet.
         """
+        denied = _rate_limit("list_topics")
+        if denied is not None:
+            return denied
         try:
             return await asyncio.wait_for(engine.list_topics(), timeout=timeout)
         except asyncio.TimeoutError:
@@ -199,6 +217,9 @@ def build_server(engine: SearchEngine, settings: Settings) -> FastMCP:
         exist on records in this topic. If Schema Registry is unreachable the
         `schema_summary` field will be null.
         """
+        denied = _rate_limit("describe_topic")
+        if denied is not None:
+            return denied
         try:
             return await asyncio.wait_for(
                 engine.describe_topic(name=name, sample_size=sample_size),
@@ -242,6 +263,9 @@ def build_server(engine: SearchEngine, settings: Settings) -> FastMCP:
         looking at, retrieve more like it. The reference itself is excluded
         from the results.
         """
+        denied = _rate_limit("find_similar_events")
+        if denied is not None:
+            return denied
         try:
             return await asyncio.wait_for(
                 engine.find_similar_events(reference_id=reference_id, limit=limit),

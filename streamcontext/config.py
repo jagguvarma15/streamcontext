@@ -74,6 +74,16 @@ class Settings(BaseSettings):
     # Hard cap on per-tool wall time. Tools time out and return a structured
     # error rather than hanging the agent.
     mcp_tool_timeout_sec: float = Field(default=5.0, gt=0)
+    # Per-tool token-bucket rate limit, in invocations per minute. Each tool
+    # name gets its own bucket. Set to 0 to disable.
+    mcp_rate_limit_per_minute: int = Field(default=120, ge=0)
+    # LRU size for the embedder query cache on the MCP path. 0 disables.
+    mcp_embed_cache_size: int = Field(default=256, ge=0)
+    # Approximate per-record JSON byte cap on the `value` field returned by
+    # search results. Anything larger is replaced with a truncated stub
+    # carrying the original size. Keeps a single huge record from blowing out
+    # the agent's context window.
+    mcp_max_value_bytes: int = Field(default=8192, ge=256)
 
     # --- Observability ---
     log_level: str = "INFO"

@@ -634,3 +634,24 @@ async def test_search_events_non_diverse_no_with_vectors() -> None:
     assert client.last_kwargs["limit"] == 5
     # with_vectors should not be set (or set to False) when diverse=False
     assert client.last_kwargs.get("with_vectors") in (None, False)
+
+
+@pytest.mark.asyncio
+async def test_search_events_truncates_oversize_value() -> None:
+    big_value = {"blob": "x" * 20_000}
+    client = CapturingClient(
+        hits=[
+            _hit("orders", 0, 1, 0, big_value, score=0.9),
+            _hit("orders", 0, 2, 0, {"small": "ok"}, score=0.8),
+        ]
+    )
+    engine = SearchEngine(
+        FakeEmbedder(), client, collection="c", max_value_bytes=1024
+    )
+    resp = await engine.search_events(query="x", limit=2)
+    assert resp.results[0].value_truncated is True
+    assert resp.results[0].value["_truncated"] is True
+    assert resp.results[0].value["_size_bytes"] >= 20_000
+    # Small one is untouched.
+    assert resp.results[1].value_truncated is False
+    assert resp.results[1].value == {"small": "ok"}

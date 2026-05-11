@@ -37,6 +37,14 @@ class EventResult(BaseModel):
         default_factory=dict,
         description="The stored Kafka record value (already redacted by the gateway).",
     )
+    value_truncated: bool = Field(
+        default=False,
+        description=(
+            "True if `value` was too large to return in full and has been "
+            "replaced with a truncated stub. Use `find_similar_events` or the "
+            "Kafka coordinate to fetch the full record from upstream."
+        ),
+    )
 
 
 class FilterClause(BaseModel):

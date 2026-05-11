@@ -7,6 +7,7 @@ and exposes it as tools.
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, Protocol
 
@@ -133,6 +134,7 @@ class SearchEngine:
         topic_allowlist: frozenset[str] = frozenset(),
         max_results: int = 100,
         max_time_range_minutes: int = 10_080,
+        max_value_bytes: int = 8192,
         schema_registry: _SchemaRegistryLike | None = None,
     ) -> None:
         self._embedder = embedder
@@ -141,6 +143,7 @@ class SearchEngine:
         self._topic_allowlist = topic_allowlist
         self._max_results = max_results
         self._max_time_range_minutes = max_time_range_minutes
+        self._max_value_bytes = max_value_bytes
         self._schema_registry = schema_registry
 
     def _build_filter(
@@ -225,9 +228,11 @@ class SearchEngine:
         hits = await self._client.search(**kwargs)
         if diverse and hits:
             ordered = _mmr_rerank(query_vector=vector, hits=hits, k=clamped_limit)
-            results = [_hit_to_result(h) for h in ordered]
+            results = [self._apply_value_cap(_hit_to_result(h)) for h in ordered]
         else:
-            results = [_hit_to_result(h) for h in hits[:clamped_limit]]
+            results = [
+                self._apply_value_cap(_hit_to_result(h)) for h in hits[:clamped_limit]
+            ]
 
         log.info(
             "mcp.search_events",
@@ -249,6 +254,12 @@ class SearchEngine:
 
     def _topic_is_allowed(self, name: str) -> bool:
         return not self._topic_allowlist or name in self._topic_allowlist
+
+    def _apply_value_cap(self, result: EventResult) -> EventResult:
+        new_value, truncated = _maybe_truncate_value(result.value, self._max_value_bytes)
+        if not truncated:
+            return result
+        return result.model_copy(update={"value": new_value, "value_truncated": True})
 
     async def _topic_count(self, name: str) -> int:
         flt = rest.Filter(
@@ -371,7 +382,9 @@ class SearchEngine:
                 order_by=None,
             )
         points, _next = res if isinstance(res, tuple) else (getattr(res, "points", []), None)
-        return [_point_to_result(p, fallback_score=0.0) for p in points]
+        return [
+            self._apply_value_cap(_point_to_result(p, fallback_score=0.0)) for p in points
+        ]
 
     async def describe_topic(self, name: str, sample_size: int = 5) -> TopicDescription:
         if not self._topic_is_allowed(name):
@@ -434,7 +447,7 @@ class SearchEngine:
             r = _hit_to_result(h)
             if r.coord.stable_id == coord.stable_id:
                 continue
-            results.append(r)
+            results.append(self._apply_value_cap(r))
             if len(results) >= clamped_limit:
                 break
 
@@ -515,6 +528,31 @@ def _point_to_result(point: Any, *, fallback_score: float) -> EventResult:
     if key is not None:
         key = str(key)
     return EventResult(coord=coord, score=fallback_score, key=key, value=value)
+
+
+def _maybe_truncate_value(
+    value: dict[str, Any], max_bytes: int
+) -> tuple[dict[str, Any], bool]:
+    """Return (value_or_stub, was_truncated). Pure; never mutates input."""
+    if max_bytes <= 0:
+        return value, False
+    try:
+        raw = json.dumps(value, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        # Non-serializable contents - keep the dict but flag the size as
+        # unknown so the agent knows not to trust raw bytes.
+        return value, False
+    if len(raw) <= max_bytes:
+        return value, False
+    preview_chars = max(0, max_bytes - 128)
+    return (
+        {
+            "_truncated": True,
+            "_size_bytes": len(raw),
+            "_preview": raw[:preview_chars],
+        },
+        True,
+    )
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
