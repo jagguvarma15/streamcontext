@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import OrderedDict
 from typing import Any, Protocol, runtime_checkable
 
 from streamcontext.config import Settings
@@ -112,6 +113,60 @@ class OpenAIEmbedder:
             return []
         resp = await self._client.embeddings.create(model=self._model_name, input=texts)
         return [d.embedding for d in resp.data]
+
+
+class CachedEmbedder:
+    """LRU wrapper around another Embedder, deduplicating identical inputs.
+
+    Useful on the MCP-server path where many agent queries are repeats or
+    near-repeats from the same conversation. For paid providers (OpenAI,
+    Cohere, etc.) this is real money saved; for local models it is mostly
+    a latency win. Disabled when `max_size <= 0`.
+    """
+
+    def __init__(self, inner: "Embedder", max_size: int = 256) -> None:
+        self._inner = inner
+        self._cache: OrderedDict[str, list[float]] = OrderedDict()
+        self._max_size = max_size
+        self.hits = 0
+        self.misses = 0
+
+    @property
+    def dim(self) -> int:
+        return self._inner.dim
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        if self._max_size <= 0:
+            self.misses += len(texts)
+            return await self._inner.embed(texts)
+
+        out: list[list[float] | None] = [None] * len(texts)
+        miss_indices: list[int] = []
+        miss_texts: list[str] = []
+        for i, t in enumerate(texts):
+            if t in self._cache:
+                vec = self._cache.pop(t)
+                self._cache[t] = vec  # move-to-end for LRU
+                out[i] = vec
+                self.hits += 1
+            else:
+                miss_indices.append(i)
+                miss_texts.append(t)
+                self.misses += 1
+
+        if miss_texts:
+            new_vecs = await self._inner.embed(miss_texts)
+            for idx, text, vec in zip(miss_indices, miss_texts, new_vecs, strict=True):
+                out[idx] = vec
+                self._cache[text] = vec
+                while len(self._cache) > self._max_size:
+                    self._cache.popitem(last=False)
+
+        # All positions are filled because we either pulled from cache or
+        # populated from the inner call.
+        return [v for v in out if v is not None]
 
 
 def build_embedder(settings: Settings) -> Embedder:
