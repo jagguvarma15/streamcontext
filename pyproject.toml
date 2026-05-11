@@ -1,6 +1,6 @@
 [project]
 name = "streamcontext"
-version = "0.2.0a4"
+version = "0.2.0"
 description = "The semantic gateway between Kafka and AI agents. Stream events into vector context."
 readme = "README.md"
 license = { text = "MIT" }

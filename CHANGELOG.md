@@ -2,6 +2,25 @@
 
 All notable changes to streamcontext are documented here. Format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] - Week 2 cut: MCP server, audited and hardened
+
+Consolidates the four `0.2.0a*` previews into a single release. streamcontext is now two processes - the ingestion gateway from v0.1 plus a new MCP server - sharing a Qdrant collection. MCP-compatible agents (Claude Desktop, Cursor, Cline, custom) query the vector store as a tool.
+
+### Added (highlights, see prior 0.2.0a entries for the running log)
+- MCP server (`streamcontext.mcp_main`) over stdio (default) or SSE. Four agent-callable tools: `list_topics`, `describe_topic`, `search_events`, `find_similar_events`.
+- `SearchEngine` with topic allowlist enforcement, server-side caps (`limit`, `time_range_minutes`), structured `FilterClause` translation, automatic `value.` field-name normalization, MMR rerank for diverse results, optional Schema Registry integration, per-record value-size truncation.
+- Defense-in-depth controls: per-tool token-bucket rate limiter (`SC_MCP_RATE_LIMIT_PER_MINUTE`), LRU embed cache (`SC_MCP_EMBED_CACHE_SIZE`), per-tool wall-clock timeouts (`SC_MCP_TOOL_TIMEOUT_SEC`), `EventResult.value_truncated` signal (`SC_MCP_MAX_VALUE_BYTES`).
+- Sink-level payload indexes (`SC_PAYLOAD_INDEX_FIELDS`) for fast filter-plus-vector queries.
+- `docs/architecture.md` rewritten around the two-process picture, `docs/mcp-setup.md`, `docs/example-conversations.md`, `docs/audit-v0.2.md`, `docs/security.md`.
+- 30+ new unit tests covering the engine, filter translation, MMR, rate limiter, embed cache, and value truncation. Existing integration test still gated on `RUN_INTEGRATION=1`.
+
+### Audit summary
+- `docs/audit-v0.1.md` (gateway): twelve security findings, nine resolved in v0.1.1, three tracked for v0.2.x (Kafka SASL, SR auth, `/metrics`).
+- `docs/audit-v0.2.md` (MCP layer): twelve security findings and four functional findings. Nine of the security findings are resolved in v0.2.0; two tracked for v0.2.x (concurrency semaphore, SSE auth); one deferred (per-tool rate-limit knobs).
+
+### Notes
+- Single bundled release rather than four separate cut tags, on user direction. The `0.2.0a*` entries below preserve the per-day running log for anyone walking the history.
+
 ## [0.2.0a4] - MCP layer hardening and v0.2 audit
 
 Day 5 of the Week 2 plan. Makes the MCP server safe to expose to a real agent in a real environment.
