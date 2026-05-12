@@ -69,3 +69,8 @@ schema_registry_data/
 demo.gif
 demo.mp4
 *.log
+
+# Local-only Claude Code handoff notes (kept out of the repo on purpose).
+# settings.json / settings.local.json under .claude/ should be committed
+# selectively if/when added; handoff.md is for local human/agent context.
+.claude/handoff.md
