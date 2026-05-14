@@ -85,6 +85,41 @@ class Settings(BaseSettings):
     # the agent's context window.
     mcp_max_value_bytes: int = Field(default=8192, ge=256)
 
+    # --- Catalog (v0.3) ---
+    # Path to the SQLite file that backs the semantic catalog. The refresher
+    # process writes it; the MCP server reads from it. Place on a Docker volume
+    # if you want it to survive restarts.
+    catalog_db_path: str = "/var/lib/streamcontext/catalog.sqlite"
+    # Comma-separated list of topics to maintain in the catalog. If empty, the
+    # refresher falls back to `SC_KAFKA_TOPICS`.
+    catalog_topics: str = ""
+    # Refresh cadences (seconds).
+    catalog_schema_refresh_sec: int = Field(default=300, ge=10)
+    catalog_sample_refresh_sec: int = Field(default=900, ge=10)
+    catalog_stats_refresh_sec: int = Field(default=60, ge=5)
+    catalog_inference_refresh_sec: int = Field(default=3600, ge=60)
+    # How many sample messages to keep per topic.
+    catalog_sample_count: int = Field(default=10, ge=1, le=200)
+    # Per-call wall budget for the message sampler.
+    catalog_sample_timeout_sec: float = Field(default=5.0, gt=0)
+    # When false, samples are gathered for inference but never persisted.
+    catalog_retain_samples: bool = True
+    # When false, the refresher skips the Kafka-side sampler entirely (useful
+    # for development environments without a broker).
+    catalog_enable_sampling: bool = True
+    # Default daily ceiling on LLM spend for catalog inference, USD.
+    catalog_llm_daily_ceiling_usd: float = Field(default=1.0, ge=0.0)
+    # Comma-separated regex patterns applied to all sampled message text before
+    # persistence or LLM submission.
+    catalog_pii_patterns: str = ""
+    # Comma-separated literal field names always dropped from samples.
+    catalog_pii_fields: str = ""
+    # LLM provider for inference: 'anthropic', 'openai', 'local', or 'disabled'.
+    catalog_llm_provider: Literal["anthropic", "openai", "local", "disabled"] = "disabled"
+    catalog_llm_model: str = "claude-haiku-4-5-20251001"
+    # Cap on prompt input tokens per inference call.
+    catalog_llm_max_input_tokens: int = Field(default=5000, ge=256)
+
     # --- Observability ---
     log_level: str = "INFO"
     log_json: bool = True
@@ -104,6 +139,18 @@ class Settings(BaseSettings):
     @property
     def mcp_topic_allowlist_set(self) -> frozenset[str]:
         return frozenset(t.strip() for t in self.mcp_topic_allowlist.split(",") if t.strip())
+
+    @property
+    def catalog_topics_list(self) -> list[str]:
+        return [t.strip() for t in self.catalog_topics.split(",") if t.strip()]
+
+    @property
+    def catalog_pii_patterns_list(self) -> list[str]:
+        return [p for p in self.catalog_pii_patterns.split(",") if p.strip()]
+
+    @property
+    def catalog_pii_fields_list(self) -> list[str]:
+        return [f.strip() for f in self.catalog_pii_fields.split(",") if f.strip()]
 
 
 def load_settings() -> Settings:
