@@ -119,6 +119,10 @@ class Settings(BaseSettings):
     catalog_llm_model: str = "claude-haiku-4-5-20251001"
     # Cap on prompt input tokens per inference call.
     catalog_llm_max_input_tokens: int = Field(default=5000, ge=256)
+    # Minimum sample-value overlap before a shared-key relationship is emitted.
+    catalog_relationship_min_overlap: float = Field(default=0.2, ge=0.0, le=1.0)
+    # Minimum LLM-reported confidence before a semantic relationship is kept.
+    catalog_relationship_llm_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
 
     # --- Observability ---
     log_level: str = "INFO"

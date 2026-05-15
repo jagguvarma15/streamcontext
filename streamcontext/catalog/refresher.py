@@ -26,6 +26,7 @@ from streamcontext.catalog.inference import (
 )
 from streamcontext.catalog.introspect import MessageSampler, SchemaIntrospector
 from streamcontext.catalog.models import CatalogConfig
+from streamcontext.catalog.relationships import RelationshipDetector
 from streamcontext.catalog.store import CatalogStore
 from streamcontext.config import Settings, load_settings
 from streamcontext.logging import configure_logging, get_logger
@@ -61,7 +62,9 @@ def build_catalog_config(settings: Settings) -> CatalogConfig:
     )
 
 
-def build_builder(settings: Settings) -> tuple[CatalogBuilder, AsyncQdrantClient]:
+def build_builder(
+    settings: Settings,
+) -> tuple[CatalogBuilder, RelationshipDetector, AsyncQdrantClient]:
     store = CatalogStore(settings.catalog_db_path)
     sr_client = _try_schema_registry(settings.schema_registry_url)
     introspector = SchemaIntrospector(sr_client)
@@ -107,29 +110,46 @@ def build_builder(settings: Settings) -> tuple[CatalogBuilder, AsyncQdrantClient
         config=catalog_config,
         inference=inference,
     )
-    return builder, qdrant
+    detector = RelationshipDetector(
+        store=store,
+        inference=inference,
+        min_overlap_ratio=settings.catalog_relationship_min_overlap,
+        llm_confidence_threshold=settings.catalog_relationship_llm_threshold,
+    )
+    return builder, detector, qdrant
 
 
-async def refresh_once(builder: CatalogBuilder, topics: list[str]) -> None:
+async def refresh_once(
+    builder: CatalogBuilder,
+    detector: RelationshipDetector,
+    topics: list[str],
+) -> None:
     for topic in topics:
         try:
             await builder.refresh_topic(topic)
         except Exception:
             log.exception("catalog.refresh.failed", topic=topic)
+    try:
+        await detector.refresh_all(topics)
+    except Exception:
+        log.exception("catalog.relationships.refresh_failed")
 
 
 async def refresh_loop(
-    builder: CatalogBuilder, topics: list[str], interval_sec: int
+    builder: CatalogBuilder,
+    detector: RelationshipDetector,
+    topics: list[str],
+    interval_sec: int,
 ) -> None:
     while True:
-        await refresh_once(builder, topics)
+        await refresh_once(builder, detector, topics)
         await asyncio.sleep(interval_sec)
 
 
 async def _async_main(loop: bool) -> int:
     settings = load_settings()
     configure_logging(level=settings.log_level, json=settings.log_json)
-    builder, qdrant = build_builder(settings)
+    builder, detector, qdrant = build_builder(settings)
     topics = settings.catalog_topics_list or settings.topics_list
     if not topics:
         log.error("catalog.no_topics_configured")
@@ -142,9 +162,11 @@ async def _async_main(loop: bool) -> int:
     )
     try:
         if loop:
-            await refresh_loop(builder, topics, settings.catalog_stats_refresh_sec)
+            await refresh_loop(
+                builder, detector, topics, settings.catalog_stats_refresh_sec
+            )
         else:
-            await refresh_once(builder, topics)
+            await refresh_once(builder, detector, topics)
     finally:
         await qdrant.close()
     return 0
