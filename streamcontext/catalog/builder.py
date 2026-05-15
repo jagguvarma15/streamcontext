@@ -1,8 +1,7 @@
 """Builds and refreshes catalog entries for individual topics.
 
-Day-1 scope is deterministic only — Schema Registry walk, sample fetch, and
-activity profiling. LLM inference is wired in by `CatalogBuilder.run_inference`
-on Day 2 and stays optional.
+The deterministic aspects (schema, samples, stats) and the optional LLM
+inference pass are coordinated here so callers refresh in one place.
 """
 
 from __future__ import annotations
@@ -59,6 +58,7 @@ class CatalogBuilder:
         schema: bool = True,
         samples: bool = True,
         stats: bool = True,
+        inference: bool | None = None,
     ) -> TopicEntry:
         """Refresh the requested aspects of one topic and return the entry."""
         now_ms = int(time.time() * 1000)
@@ -113,20 +113,54 @@ class CatalogBuilder:
                 last_day=activity.messages_last_day,
             )
 
+        run_inference = inference if inference is not None else (self._inference is not None)
+        if run_inference and self._inference is not None:
+            await self._run_inference(entry)
+
         return entry
+
+    async def _run_inference(self, entry: "TopicEntry") -> None:
+        assert self._inference is not None
+        if not entry.fields:
+            log.debug("catalog.inference.skip_no_fields", topic=entry.name)
+            return
+        status, description, conf, annotations = await self._inference.infer(entry)
+        entry.inference_status = status
+        if description is not None:
+            entry.description = description
+        if conf is not None:
+            entry.description_confidence = conf
+        entry.last_inference_refresh_ms = int(time.time() * 1000)
+        self._store.upsert_topic(entry)
+        if annotations:
+            self._store.update_field_inference(entry.name, annotations)
+            # Reload fields so callers see merged annotations on the returned entry.
+            refreshed = self._store.get_topic(entry.name)
+            if refreshed is not None:
+                entry.fields = refreshed.fields
+        log.info(
+            "catalog.inference.applied",
+            topic=entry.name,
+            status=status,
+            description=bool(description),
+            n_annotations=len(annotations),
+        )
 
     def stale_aspects(self, topic: str, now_ms: int | None = None) -> dict[str, bool]:
         """Return which refresh aspects are due for `topic`, given config TTLs."""
         now_ms = now_ms or int(time.time() * 1000)
         entry = self._store.get_topic(topic)
         if entry is None:
-            return {"schema": True, "samples": True, "stats": True}
+            return {"schema": True, "samples": True, "stats": True, "inference": True}
         return {
             "schema": _is_stale(entry.last_schema_refresh_ms, self._config.schema_refresh_sec, now_ms),
             "samples": _is_stale(
                 entry.last_sample_refresh_ms, self._config.sample_refresh_sec, now_ms
             ),
             "stats": _is_stale(entry.last_stats_refresh_ms, self._config.stats_refresh_sec, now_ms),
+            "inference": _is_stale(
+                entry.last_inference_refresh_ms, self._config.inference_refresh_sec, now_ms
+            ),
         }
 
     def get_topic_entry(self, topic: str) -> TopicEntry | None:
@@ -147,6 +181,7 @@ class CatalogBuilder:
             schema=aspects.get("schema", False),
             samples=aspects.get("samples", False),
             stats=aspects.get("stats", False),
+            inference=aspects.get("inference", False) and self._inference is not None,
         )
 
 

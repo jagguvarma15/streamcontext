@@ -7,6 +7,12 @@ schedule. The MCP server reads from it to answer agent questions about what
 topics exist, what fields mean, and how topics relate.
 """
 
+from streamcontext.catalog.inference import (
+    InferenceEngine,
+    LLMProvider,
+    LLMUnavailableError,
+    build_llm_provider,
+)
 from streamcontext.catalog.models import (
     ActivityStats,
     CatalogConfig,
@@ -23,8 +29,12 @@ __all__ = [
     "CatalogConfig",
     "CatalogStore",
     "FieldEntry",
+    "InferenceEngine",
     "InferenceStatus",
+    "LLMProvider",
+    "LLMUnavailableError",
     "RelationshipEntry",
     "SampleMessage",
     "TopicEntry",
+    "build_llm_provider",
 ]

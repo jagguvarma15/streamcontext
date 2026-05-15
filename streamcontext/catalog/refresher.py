@@ -19,6 +19,11 @@ from qdrant_client import AsyncQdrantClient
 
 from streamcontext.catalog.activity import ActivityProfiler
 from streamcontext.catalog.builder import CatalogBuilder
+from streamcontext.catalog.inference import (
+    InferenceEngine,
+    LLMUnavailableError,
+    build_llm_provider,
+)
 from streamcontext.catalog.introspect import MessageSampler, SchemaIntrospector
 from streamcontext.catalog.models import CatalogConfig
 from streamcontext.catalog.store import CatalogStore
@@ -69,12 +74,38 @@ def build_builder(settings: Settings) -> tuple[CatalogBuilder, AsyncQdrantClient
             schema_registry_url=settings.schema_registry_url,
             timeout_sec=settings.catalog_sample_timeout_sec,
         )
+    catalog_config = build_catalog_config(settings)
+    inference: InferenceEngine | None = None
+    if settings.catalog_llm_provider != "disabled":
+        try:
+            provider = build_llm_provider(
+                provider=settings.catalog_llm_provider,
+                model=settings.catalog_llm_model,
+            )
+            inference = InferenceEngine(
+                provider=provider,
+                store=store,
+                config=catalog_config,
+            )
+            log.info(
+                "catalog.inference.enabled",
+                provider=settings.catalog_llm_provider,
+                model=settings.catalog_llm_model,
+                ceiling_usd=catalog_config.daily_llm_spend_ceiling_usd,
+            )
+        except LLMUnavailableError as exc:
+            log.warning(
+                "catalog.inference.unavailable",
+                provider=settings.catalog_llm_provider,
+                error=str(exc),
+            )
     builder = CatalogBuilder(
         store=store,
         introspector=introspector,
         sampler=sampler,
         profiler=profiler,
-        config=build_catalog_config(settings),
+        config=catalog_config,
+        inference=inference,
     )
     return builder, qdrant
 
