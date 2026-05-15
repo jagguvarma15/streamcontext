@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 from streamcontext.catalog.activity import ActivityProfiler
+from streamcontext.catalog.inference import InferenceEngine
 from streamcontext.catalog.introspect import MessageSampler, SchemaIntrospector
 from streamcontext.catalog.models import (
     CatalogConfig,
@@ -34,12 +35,14 @@ class CatalogBuilder:
         sampler: MessageSampler | None,
         profiler: ActivityProfiler,
         config: CatalogConfig | None = None,
+        inference: InferenceEngine | None = None,
     ) -> None:
         self._store = store
         self._introspector = introspector
         self._sampler = sampler
         self._profiler = profiler
         self._config = config or CatalogConfig()
+        self._inference = inference
 
     @property
     def config(self) -> CatalogConfig:
