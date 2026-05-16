@@ -85,7 +85,7 @@ class SearchResponse(BaseModel):
 
 
 class TopicInfo(BaseModel):
-    """Coarse stats for one ingested topic."""
+    """Coarse stats for one ingested topic, with optional catalog enrichment."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -97,6 +97,17 @@ class TopicInfo(BaseModel):
     newest_timestamp_ms: int | None = Field(
         default=None, description="Most recent record timestamp in this topic, if known."
     )
+    description: str | None = Field(
+        default=None,
+        description=(
+            "One- or two-sentence inferred description of the topic from the "
+            "semantic catalog. None if inference is disabled or has not run."
+        ),
+    )
+    description_confidence: float | None = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Self-reported confidence of the inferred description.",
+    )
 
 
 class TopicsResponse(BaseModel):
@@ -107,6 +118,96 @@ class TopicsResponse(BaseModel):
     topics: list[TopicInfo]
 
 
+class TopicMatch(BaseModel):
+    """One ranked match returned by `find_topics_by_purpose`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    score: float = Field(
+        description=(
+            "Cosine similarity between the query embedding and the topic "
+            "description embedding. Higher is more relevant."
+        ),
+    )
+    description: str | None = None
+    description_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    description_source: str = Field(
+        default="inferred",
+        description=(
+            "Where the embedded description came from. 'inferred' = catalog "
+            "LLM annotation; 'synthesized' = built from topic name + field "
+            "names when no inferred description is available."
+        ),
+    )
+
+
+class FindTopicsResponse(BaseModel):
+    """Top-level response for `find_topics_by_purpose`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    total: int
+    matches: list[TopicMatch]
+
+
+class RelationshipInfo(BaseModel):
+    """One detected relationship between two topics."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_topic: str
+    target_topic: str
+    relationship_type: str = Field(
+        description=(
+            "One of 'shared_key', 'foreign_reference', 'event_chain', 'semantic'."
+        ),
+    )
+    source_field: str | None = None
+    target_field: str | None = None
+    confidence: float = Field(ge=0.0, le=1.0)
+    rationale: str | None = None
+
+
+class RelationshipsResponse(BaseModel):
+    """Top-level response for `get_topic_relationships`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    topic: str
+    total: int
+    relationships: list[RelationshipInfo]
+
+
+class FieldExplanation(BaseModel):
+    """Top-level response for `explain_field`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    topic: str
+    field: str
+    type: str
+    nullable: bool = False
+    doc: str | None = Field(
+        default=None, description="Doc string from Schema Registry, if present."
+    )
+    inferred_meaning: str | None = Field(
+        default=None,
+        description=(
+            "LLM-inferred meaning of the field. 'unknown' if the model could "
+            "not determine the meaning from the schema and samples."
+        ),
+    )
+    inferred_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    example_values: list[Any] = Field(
+        default_factory=list,
+        description=(
+            "Up to 5 representative values drawn from recent sample messages."
+        ),
+    )
+
+
 class SchemaField(BaseModel):
     """One field in an Avro record schema, flattened for agent consumption."""
 
@@ -115,6 +216,15 @@ class SchemaField(BaseModel):
     name: str
     type: str
     doc: str | None = None
+    nullable: bool = False
+    inferred_meaning: str | None = Field(
+        default=None,
+        description=(
+            "Catalog-inferred meaning of this field, or None when the catalog "
+            "has not annotated it."
+        ),
+    )
+    inferred_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class SchemaSummary(BaseModel):
@@ -145,6 +255,21 @@ class TopicDescription(BaseModel):
         ),
     )
     samples: list[EventResult] = Field(default_factory=list)
+    description: str | None = Field(
+        default=None,
+        description=(
+            "Catalog-inferred natural-language summary of the topic, when "
+            "available. None when inference is disabled or has not run."
+        ),
+    )
+    description_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    inference_status: str | None = Field(
+        default=None,
+        description=(
+            "Catalog inference status: 'pending', 'inferred', 'disabled', "
+            "or 'failed'. None when the catalog has no record of this topic."
+        ),
+    )
 
 
 class ToolError(BaseModel):
