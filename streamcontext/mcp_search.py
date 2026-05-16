@@ -15,10 +15,15 @@ from qdrant_client.http import models as rest
 
 from streamcontext.errors import StreamcontextError
 from streamcontext.logging import get_logger
+from streamcontext.mcp_catalog import CatalogReader
 from streamcontext.mcp_models import (
     EventCoord,
     EventResult,
+    FieldExplanation,
     FilterClause,
+    FindTopicsResponse,
+    RelationshipInfo,
+    RelationshipsResponse,
     SchemaField,
     SchemaSummary,
     SearchResponse,
@@ -136,6 +141,7 @@ class SearchEngine:
         max_time_range_minutes: int = 10_080,
         max_value_bytes: int = 8192,
         schema_registry: _SchemaRegistryLike | None = None,
+        catalog: CatalogReader | None = None,
     ) -> None:
         self._embedder = embedder
         self._client = client
@@ -145,6 +151,7 @@ class SearchEngine:
         self._max_time_range_minutes = max_time_range_minutes
         self._max_value_bytes = max_value_bytes
         self._schema_registry = schema_registry
+        self._catalog = catalog
 
     def _build_filter(
         self,
@@ -328,21 +335,35 @@ class SearchEngine:
         infos: list[TopicInfo] = []
         for name in names:
             count = await self._topic_count(name)
+            catalog_entry = (
+                self._catalog.get_topic(name) if self._catalog is not None else None
+            )
+            description = catalog_entry.description if catalog_entry else None
+            description_conf = (
+                catalog_entry.description_confidence if catalog_entry else None
+            )
             if count == 0 and self._topic_allowlist:
-                # Allowlisted but no records yet - still surface so the agent
-                # knows the topic exists.
-                infos.append(TopicInfo(name=name, count=0))
+                infos.append(
+                    TopicInfo(
+                        name=name,
+                        count=0,
+                        description=description,
+                        description_confidence=description_conf,
+                    )
+                )
                 continue
-            if count == 0:
+            if count == 0 and catalog_entry is None:
                 continue
-            oldest = await self._topic_extreme_ts(name, newest=False)
-            newest = await self._topic_extreme_ts(name, newest=True)
+            oldest = await self._topic_extreme_ts(name, newest=False) if count else None
+            newest = await self._topic_extreme_ts(name, newest=True) if count else None
             infos.append(
                 TopicInfo(
                     name=name,
                     count=count,
                     oldest_timestamp_ms=oldest,
                     newest_timestamp_ms=newest,
+                    description=description,
+                    description_confidence=description_conf,
                 )
             )
         log.info("mcp.list_topics", n=len(infos))
@@ -395,8 +416,25 @@ class SearchEngine:
         newest = await self._topic_extreme_ts(name, newest=True) if count else None
         samples = await self._topic_samples(name, sample_size) if count else []
         schema = self._fetch_schema(name)
+        catalog_entry = (
+            self._catalog.get_topic(name) if self._catalog is not None else None
+        )
+        if catalog_entry is not None:
+            schema = _merge_catalog_into_schema(schema, catalog_entry, subject_fallback=name)
+        description = catalog_entry.description if catalog_entry else None
+        description_conf = (
+            catalog_entry.description_confidence if catalog_entry else None
+        )
+        inference_status = (
+            catalog_entry.inference_status if catalog_entry else None
+        )
         log.info(
-            "mcp.describe_topic", topic=name, count=count, samples=len(samples), schema=bool(schema)
+            "mcp.describe_topic",
+            topic=name,
+            count=count,
+            samples=len(samples),
+            schema=bool(schema),
+            from_catalog=catalog_entry is not None,
         )
         return TopicDescription(
             name=name,
@@ -405,7 +443,47 @@ class SearchEngine:
             newest_timestamp_ms=newest,
             schema_summary=schema,
             samples=samples,
+            description=description,
+            description_confidence=description_conf,
+            inference_status=inference_status,
         )
+
+    async def find_topics_by_purpose(
+        self, *, description: str, limit: int = 5
+    ) -> FindTopicsResponse:
+        clamped = max(1, min(limit, self._max_results))
+        if self._catalog is None or not description.strip():
+            return FindTopicsResponse(query=description, total=0, matches=[])
+        matches = await self._catalog.find_topics_by_purpose(
+            embedder=self._embedder,
+            description=description,
+            limit=clamped,
+        )
+        log.info(
+            "mcp.find_topics_by_purpose",
+            query_len=len(description),
+            limit=clamped,
+            n_matches=len(matches),
+        )
+        return FindTopicsResponse(
+            query=description, total=len(matches), matches=matches
+        )
+
+    async def get_topic_relationships(
+        self, *, topic: str
+    ) -> RelationshipsResponse:
+        if self._catalog is None or not self._topic_is_allowed(topic):
+            return RelationshipsResponse(topic=topic, total=0, relationships=[])
+        rels = self._catalog.get_relationships(topic)
+        log.info("mcp.get_topic_relationships", topic=topic, n=len(rels))
+        return RelationshipsResponse(topic=topic, total=len(rels), relationships=rels)
+
+    async def explain_field(
+        self, *, topic: str, field: str
+    ) -> FieldExplanation | None:
+        if self._catalog is None or not self._topic_is_allowed(topic):
+            return None
+        return self._catalog.explain_field(topic=topic, field=field)
 
     async def find_similar_events(
         self,
@@ -480,6 +558,56 @@ def _parse_reference_id(reference_id: str) -> EventCoord:
     if partition < 0 or offset < 0:
         raise EventNotFoundError(f"negative partition/offset in {reference_id!r}")
     return EventCoord(topic=topic, partition=partition, offset=offset, timestamp_ms=0)
+
+
+def _merge_catalog_into_schema(
+    schema: SchemaSummary | None,
+    catalog_entry: Any,
+    *,
+    subject_fallback: str,
+) -> SchemaSummary:
+    """Overlay catalog-inferred field annotations onto a SchemaSummary.
+
+    When the registry-derived schema is missing (SR unreachable), the
+    catalog's flattened fields are used as the schema instead so callers see
+    a coherent shape.
+    """
+    if schema is None:
+        fields = [
+            SchemaField(
+                name=f.name,
+                type=f.type,
+                doc=f.doc,
+                nullable=f.nullable,
+                inferred_meaning=f.inferred_meaning,
+                inferred_confidence=f.inferred_confidence,
+            )
+            for f in catalog_entry.fields
+        ]
+        return SchemaSummary(
+            subject=catalog_entry.schema_subject or f"{subject_fallback}-value",
+            version=catalog_entry.schema_version,
+            schema_id=catalog_entry.schema_id,
+            fields=fields,
+        )
+    by_name = {f.name: f for f in catalog_entry.fields}
+    merged_fields: list[SchemaField] = []
+    for f in schema.fields:
+        catalog_field = by_name.get(f.name)
+        if catalog_field is None:
+            merged_fields.append(f)
+            continue
+        merged_fields.append(
+            f.model_copy(
+                update={
+                    "inferred_meaning": catalog_field.inferred_meaning,
+                    "inferred_confidence": catalog_field.inferred_confidence,
+                    "nullable": catalog_field.nullable or f.nullable,
+                    "doc": f.doc or catalog_field.doc,
+                }
+            )
+        )
+    return schema.model_copy(update={"fields": merged_fields})
 
 
 def _summarize_schema(subject: str, latest: Any) -> SchemaSummary:
