@@ -18,7 +18,10 @@ from pydantic import Field
 from streamcontext.config import Settings
 from streamcontext.logging import get_logger
 from streamcontext.mcp_models import (
+    FieldExplanation,
     FilterClause,
+    FindTopicsResponse,
+    RelationshipsResponse,
     SearchResponse,
     TopicDescription,
     TopicsResponse,
@@ -31,15 +34,21 @@ log = get_logger("streamcontext.mcp.server")
 
 SERVER_NAME = "streamcontext"
 SERVER_INSTRUCTIONS = (
-    "Search a Kafka-derived vector store. Workflow:\n"
+    "Search a Kafka-derived vector store with a semantic catalog. Workflow:\n"
     "1. Call `list_topics` first when the user references unfamiliar data, to "
-    "see which streams are available.\n"
-    "2. Call `describe_topic` to see the schema and a few sample records "
-    "before constructing complex queries.\n"
-    "3. Use `search_events` to find records by meaning. Restrict scope with "
+    "see which streams are available and their inferred descriptions.\n"
+    "2. Call `find_topics_by_purpose` when the user describes a goal but does "
+    "not name a topic: 'find me billing data', 'where are payment events?'.\n"
+    "3. Call `describe_topic` to see the schema, sample records, and inferred "
+    "field meanings before constructing complex queries.\n"
+    "4. Call `get_topic_relationships` when answering multi-topic questions: "
+    "the catalog knows which topics share keys or describe the same flow.\n"
+    "5. Call `explain_field` when you need the meaning of a specific field or "
+    "example values before writing a filter predicate.\n"
+    "6. Use `search_events` to find records by meaning. Restrict scope with "
     "`topic` and `time_range_minutes` when the user mentions a particular "
     "stream or recent activity.\n"
-    "4. Use `find_similar_events` for incident-style follow-ups: 'find more "
+    "7. Use `find_similar_events` for incident-style follow-ups: 'find more "
     "events like this one' given a `topic:partition:offset` reference.\n"
     "Every result carries Kafka coordinates so you can cite it precisely."
 )
@@ -234,6 +243,138 @@ def build_server(engine: SearchEngine, settings: Settings) -> FastMCP:
         except Exception as exc:
             log.exception("mcp.describe_topic.error", topic=name)
             return ToolError(code="internal_error", message=str(exc))
+
+    @mcp.tool()
+    async def find_topics_by_purpose(
+        description: Annotated[
+            str,
+            Field(
+                min_length=1,
+                max_length=1000,
+                description=(
+                    "Natural-language description of the data you are looking "
+                    "for, e.g. 'billing data', 'failed payment attempts'."
+                ),
+            ),
+        ],
+        limit: Annotated[
+            int,
+            Field(
+                ge=1,
+                le=settings.mcp_max_results,
+                description="Maximum number of ranked topics to return.",
+            ),
+        ] = 5,
+    ) -> FindTopicsResponse | ToolError:
+        """Rank catalog topics by how well they match a purpose description.
+
+        Embeds `description` and compares it to each topic's catalog
+        description. Useful when the user describes a goal but does not name
+        a topic. Requires the semantic catalog to be enabled.
+        """
+        denied = _rate_limit("find_topics_by_purpose")
+        if denied is not None:
+            return denied
+        try:
+            return await asyncio.wait_for(
+                engine.find_topics_by_purpose(description=description, limit=limit),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            log.warning("mcp.find_topics_by_purpose.timeout", timeout_sec=timeout)
+            return ToolError(
+                code="timeout",
+                message=f"find_topics_by_purpose exceeded {timeout:.1f}s server-side timeout.",
+            )
+        except Exception as exc:
+            log.exception("mcp.find_topics_by_purpose.error")
+            return ToolError(code="internal_error", message=str(exc))
+
+    @mcp.tool()
+    async def get_topic_relationships(
+        topic: Annotated[
+            str,
+            Field(
+                min_length=1,
+                max_length=200,
+                description="Kafka topic whose relationships to retrieve.",
+            ),
+        ],
+    ) -> RelationshipsResponse | ToolError:
+        """Return relationships the catalog has detected for `topic`.
+
+        Includes both heuristic matches (shared keys, foreign references) and
+        semantic matches inferred by the catalog's LLM layer. Use this when
+        the user asks a question that crosses topic boundaries so you can
+        identify the joining field before searching.
+        """
+        denied = _rate_limit("get_topic_relationships")
+        if denied is not None:
+            return denied
+        try:
+            return await asyncio.wait_for(
+                engine.get_topic_relationships(topic=topic), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            log.warning("mcp.get_topic_relationships.timeout", topic=topic, timeout_sec=timeout)
+            return ToolError(
+                code="timeout",
+                message=f"get_topic_relationships exceeded {timeout:.1f}s server-side timeout.",
+            )
+        except Exception as exc:
+            log.exception("mcp.get_topic_relationships.error", topic=topic)
+            return ToolError(code="internal_error", message=str(exc))
+
+    @mcp.tool()
+    async def explain_field(
+        topic: Annotated[
+            str,
+            Field(
+                min_length=1,
+                max_length=200,
+                description="Kafka topic the field belongs to.",
+            ),
+        ],
+        field: Annotated[
+            str,
+            Field(
+                min_length=1,
+                max_length=200,
+                description=(
+                    "Dotted field path, e.g. 'customer_id' or "
+                    "'shipping_address.zip'."
+                ),
+            ),
+        ],
+    ) -> FieldExplanation | ToolError:
+        """Return what the catalog knows about a single field.
+
+        Includes type, doc string, the catalog's inferred meaning and
+        confidence, plus a handful of example values pulled from recent
+        samples so the agent can write accurate filter predicates.
+        """
+        denied = _rate_limit("explain_field")
+        if denied is not None:
+            return denied
+        try:
+            result = await asyncio.wait_for(
+                engine.explain_field(topic=topic, field=field), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            log.warning("mcp.explain_field.timeout", topic=topic, field=field, timeout_sec=timeout)
+            return ToolError(
+                code="timeout",
+                message=f"explain_field exceeded {timeout:.1f}s server-side timeout.",
+            )
+        except Exception as exc:
+            log.exception("mcp.explain_field.error", topic=topic, field=field)
+            return ToolError(code="internal_error", message=str(exc))
+        if result is None:
+            return ToolError(
+                code="not_found",
+                message=f"No catalog entry for topic {topic!r} and field {field!r}.",
+            )
+        return result
 
     @mcp.tool()
     async def find_similar_events(
