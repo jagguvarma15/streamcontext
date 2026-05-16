@@ -16,10 +16,12 @@ import sys
 
 from qdrant_client import AsyncQdrantClient
 
+from streamcontext.catalog.store import CatalogStore
 from streamcontext.config import load_settings
 from streamcontext.embedder import CachedEmbedder, build_embedder
 from streamcontext.errors import ConfigurationError
 from streamcontext.logging import configure_logging, get_logger
+from streamcontext.mcp_catalog import CatalogReader
 from streamcontext.mcp_search import SearchEngine, _SchemaRegistryLike
 from streamcontext.mcp_server import build_server, warn_if_allowlist_empty
 
@@ -64,6 +66,16 @@ async def _prepare() -> tuple[object, object]:
 
     client = AsyncQdrantClient(url=settings.qdrant_url)
     sr_client = _try_schema_registry(settings.schema_registry_url)
+    catalog_reader: CatalogReader | None = None
+    try:
+        catalog_store = CatalogStore(settings.catalog_db_path)
+        catalog_reader = CatalogReader(
+            store=catalog_store,
+            allowlist=settings.mcp_topic_allowlist_set,
+        )
+        log.info("mcp.catalog.attached", db_path=str(catalog_store.path))
+    except Exception as exc:
+        log.warning("mcp.catalog.unavailable", error=str(exc))
     engine = SearchEngine(
         embedder=embedder,
         client=client,
@@ -73,6 +85,7 @@ async def _prepare() -> tuple[object, object]:
         max_time_range_minutes=settings.mcp_max_time_range_minutes,
         max_value_bytes=settings.mcp_max_value_bytes,
         schema_registry=sr_client,
+        catalog=catalog_reader,
     )
     warn_if_allowlist_empty(settings)
     log.info(
