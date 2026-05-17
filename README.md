@@ -1,14 +1,14 @@
 # streamcontext
 
 > **The semantic gateway between Kafka and AI agents.**
-> Stream Kafka events into a vector store and let MCP-compatible agents query your real-time data by meaning - with full Kafka coordinates on every result.
+> Self-describing event streams: every topic, field, and relationship explained in natural language, queryable by agents — not just by humans reading Avro schemas.
 
-[![status](https://img.shields.io/badge/status-v0.2--alpha-orange)](#roadmap)
+[![status](https://img.shields.io/badge/status-v0.3--alpha-orange)](#roadmap)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
 [![docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker)](docker-compose.yml)
 
-> A short demo video lives at `docs/demo.mp4` when present. Architecture diagram is in [`docs/architecture.md`](docs/architecture.md).
+> A short demo video lives at `docs/demo.mp4` when present. Architecture diagram is in [`docs/architecture.md`](docs/architecture.md); catalog deep-dive in [`docs/catalog.md`](docs/catalog.md).
 
 ---
 
@@ -16,9 +16,13 @@
 
 LLM agents are great at reasoning, terrible at remembering. RAG fixes the memory problem for static knowledge - docs, wikis, codebases. But the most operationally interesting data in any company isn't static: it is flowing through Kafka right now. Orders, clicks, alerts, sensor readings, deploys.
 
-streamcontext is the missing intermediary. Point the ingestion gateway at a Kafka topic and it continuously embeds messages into a vector store, preserving full Kafka metadata (topic, partition, offset, timestamp, headers, key) as filterable payload. Run the MCP server alongside your agent host (Claude Desktop, Cursor, Cline, custom) and your agents query the stream like any other knowledge base - except this one is always current.
+streamcontext is the missing intermediary. Three cooperating processes:
 
-Two cooperating processes, one shared Qdrant collection. See [`docs/architecture.md`](docs/architecture.md) for the two-process diagram.
+- The **ingestion gateway** continuously embeds Kafka messages into a vector store, preserving full Kafka metadata (topic, partition, offset, timestamp, headers, key) as filterable payload.
+- The **catalog refresher** keeps a semantic catalog of every topic — schema, sample messages, activity stats, inferred descriptions, per-field meanings, and detected relationships — in a SQLite file that the MCP server reads.
+- The **MCP server** runs alongside your agent host (Claude Desktop, Cursor, Cline, custom) and exposes the data through MCP tools. Agents query the stream like any other knowledge base — except this one is always current and self-describing.
+
+Diagram in [`docs/architecture.md`](docs/architecture.md). Catalog details in [`docs/catalog.md`](docs/catalog.md).
 
 ## Quickstart (10 minutes)
 
@@ -42,8 +46,13 @@ python examples/producer.py --rate 5
 # 4. Confirm retrieval works without an agent (sanity check)
 python examples/query.py "high-value orders from California"
 
-# 5. Wire up your agent (see "Use with Claude Desktop" below) and start asking questions
+# 5. Populate the semantic catalog (one pass; --loop runs continuously)
+python -m streamcontext.catalog.refresher
+
+# 6. Wire up your agent (see "Use with Claude Desktop" below) and start asking questions
 ```
+
+Step 5 is optional — the deterministic tools work without it — but it unlocks the catalog-backed tools (`find_topics_by_purpose`, `get_topic_relationships`, `explain_field`, plus inferred descriptions on `list_topics`/`describe_topic`). Set `SC_CATALOG_LLM_PROVIDER=anthropic` (or `openai`, or `local`) before running the refresher if you want LLM-derived descriptions; the default is `disabled`, which keeps the catalog strictly deterministic.
 
 Within seconds of step 3 you should see top-K matching orders, each annotated with its Kafka coordinates. The Qdrant dashboard at <http://localhost:6333/dashboard> visualizes the points as they arrive.
 
@@ -86,8 +95,11 @@ Restart Claude Desktop. The `streamcontext` server appears in the tools panel. S
 
 | Tool | What it does |
 |---|---|
-| `list_topics` | List ingested topics with approximate counts and time windows. Call this first when the user references unfamiliar data. |
-| `describe_topic` | Schema (from Schema Registry when reachable), counts, time window, and a few sample records for one topic. Ground the agent in the schema before constructing filters. |
+| `list_topics` | List ingested topics with approximate counts, time windows, and the catalog-inferred description for each. Call this first when the user references unfamiliar data. |
+| `describe_topic` | Schema (from Schema Registry when reachable), counts, time window, sample records, the catalog's inferred topic description, and per-field meanings with confidences. |
+| `find_topics_by_purpose` | "Where would I find billing data?" Embeds the input and ranks topics by similarity to their catalog descriptions. Falls back to a synthesized description from field names when inference has not run. |
+| `get_topic_relationships` | Detected relationships between topics (`shared_key`, `foreign_reference`, `event_chain`, `semantic`) with confidence scores. Use before constructing multi-topic queries. |
+| `explain_field` | Inferred meaning of a single field plus example values from samples. Use before writing filter predicates on an unfamiliar field. |
 | `search_events` | Semantic search ranked by similarity to a natural-language query. Supports structured `filters`, `topic`, `time_range_minutes`, `score_threshold`, and an MMR-based `diverse` mode for deduping near-identical hits. |
 | `find_similar_events` | "More like this one" given a `topic:partition:offset` reference. Useful for incident investigation. |
 
@@ -95,30 +107,35 @@ Every result carries the Kafka coordinate (`coord.topic:coord.partition:coord.of
 
 ## Example agent conversations
 
-Three patterns the v0.2 tools are tuned for:
+Patterns the tools are tuned for:
 
-1. **"Find high-value orders from California in the last hour"** - the agent uses `search_events` with `topic="orders"`, `time_range_minutes=60`, and structured filters `region=US_WEST`, `total>=200`.
-2. **"What failed transactions did we see today?"** - the agent first calls `describe_topic` to learn that `status` is an enum with `cancelled` and `refunded` values, then `search_events` with `filters=[{field: status, in_values: [cancelled, refunded]}]`.
-3. **"Anything weird in the last 5 minutes?"** - the agent embeds the intent ("unusual, anomalous, or unexpected event"), sets `diverse=true` so MMR drops near-duplicates, restricts the time window, and returns ten qualitatively different events.
+1. **"Find high-value orders from California in the last hour"** — `search_events` with `topic="orders"`, `time_range_minutes=60`, and structured filters `region=US_WEST`, `total>=200`.
+2. **"What failed transactions did we see today?"** — `describe_topic` to learn that `status` is an enum, then `search_events` with `filters=[{field: status, in_values: [cancelled, refunded]}]`.
+3. **"Anything weird in the last 5 minutes?"** — embed the intent ("unusual, anomalous, or unexpected event"), set `diverse=true`, restrict the time window.
+4. **"What kinds of customer data do we have flowing?"** — `list_topics` to see inferred descriptions, then `find_topics_by_purpose` to rank by relevance.
+5. **"Find all failed payments and the orders they're attached to"** — `get_topic_relationships` to discover the join field, then two `search_events` calls.
+6. **"What does the `risk_score` field actually mean?"** — `explain_field` returns the inferred meaning and a handful of example values.
 
 Walked end-to-end with the tool-call shapes in [`docs/example-conversations.md`](docs/example-conversations.md). Tuning checklist at the bottom of that file.
 
 ## How it fits together
 
 ```
-   ingestion process                       MCP process
-   -----------------                       -----------
-
-   Kafka  ->  consumer  ->  pipeline  -.            ,-  SearchEngine  ->  FastMCP  ->  stdio / SSE
-              (avro/SR)    (batched,    \          /     (filters,        (tools,         |
-                            redacted)    \        /       MMR,             timeout,       v
-                                          \      /        truncation)      rate limit)   agent
-                                           v    ^                                       (Claude
-                                          Qdrant collection                              Desktop,
-                                         (shared substrate)                              Cursor, ...)
+   ingestion process            MCP process             catalog refresher
+   -----------------            -----------             -----------------
+   Kafka -> consumer            FastMCP tools ── reads ── CatalogStore
+            -> embedder              ^                   (SQLite, WAL)
+            -> Qdrant ── shared ────/                    ^
+                         state                          writes
+                                                          │
+                                              SchemaIntrospector,
+                                              MessageSampler,
+                                              ActivityProfiler,
+                                              InferenceEngine,
+                                              RelationshipDetector
 ```
 
-Full design notes - text-extraction strategy, batching, offset semantics, deterministic point IDs, topic allowlist, payload redaction - in [`docs/architecture.md`](docs/architecture.md). Security posture in [`docs/security.md`](docs/security.md).
+Full design notes — text-extraction strategy, batching, offset semantics, deterministic point IDs, topic allowlist, payload redaction, the catalog process — in [`docs/architecture.md`](docs/architecture.md). Catalog deep-dive in [`docs/catalog.md`](docs/catalog.md). Data handling and provider data policies in [`docs/data-handling.md`](docs/data-handling.md). Security posture in [`docs/security.md`](docs/security.md).
 
 ## Configuration
 
@@ -151,21 +168,40 @@ Everything is env-driven. The most useful knobs are below; see [`.env.example`](
 | `SC_MCP_EMBED_CACHE_SIZE` | `256` | LRU size for the embedder query cache. `0` disables. |
 | `SC_MCP_MAX_VALUE_BYTES` | `8192` | Per-result `value` JSON cap. Larger values are replaced with a truncated stub. |
 
+### Semantic catalog
+
+| Variable | Default | Notes |
+|---|---|---|
+| `SC_CATALOG_DB_PATH` | `/var/lib/streamcontext/catalog.sqlite` | SQLite file shared between the refresher and the MCP server. |
+| `SC_CATALOG_TOPICS` | (empty → `SC_KAFKA_TOPICS`) | Comma-separated topics the catalog manages. |
+| `SC_CATALOG_SCHEMA_REFRESH_SEC` | `300` | Schema TTL. |
+| `SC_CATALOG_SAMPLE_REFRESH_SEC` | `900` | Sample TTL. |
+| `SC_CATALOG_STATS_REFRESH_SEC` | `60` | Stats TTL (also the outer `--loop` interval). |
+| `SC_CATALOG_INFERENCE_REFRESH_SEC` | `3600` | LLM-inference TTL. |
+| `SC_CATALOG_SAMPLE_COUNT` | `10` | Recent messages kept per topic. |
+| `SC_CATALOG_RETAIN_SAMPLES` | `true` | Set `false` for metadata-only persistence. |
+| `SC_CATALOG_LLM_PROVIDER` | `disabled` | `disabled`, `anthropic`, `openai`, or `local` (Ollama). |
+| `SC_CATALOG_LLM_MODEL` | `claude-haiku-4-5-20251001` | Pick the smallest model that does the job well. |
+| `SC_CATALOG_LLM_DAILY_CEILING_USD` | `1.0` | Hard daily spend cap; once tripped, inference is disabled until UTC rollover. |
+| `SC_CATALOG_PII_FIELDS` | (empty) | csv of keys to drop from samples (e.g. `email,phone`). |
+| `SC_CATALOG_PII_PATTERNS` | (empty) | csv of regexes to mask inside string values. |
+
 ## Security
 
-Two audit documents drive the security posture:
+Three audit documents drive the security posture:
 
-- [`docs/audit-v0.1.md`](docs/audit-v0.1.md) - ingestion gateway, before MCP work began.
-- [`docs/audit-v0.2.md`](docs/audit-v0.2.md) - MCP layer, before v0.2.0 cut.
+- [`docs/audit-v0.1.md`](docs/audit-v0.1.md) — ingestion gateway, before MCP work began.
+- [`docs/audit-v0.2.md`](docs/audit-v0.2.md) — MCP layer, before v0.2.0 cut.
+- [`docs/audit-v0.3.md`](docs/audit-v0.3.md) — semantic catalog, before v0.3.0 cut.
 
-Threat model and recommended production-adjacent settings in [`docs/security.md`](docs/security.md). Headline: v0.2 assumes local/trusted-host deployment. Multi-tenant exposure and authenticated SSE are v1.0 work.
+Threat model and recommended production-adjacent settings in [`docs/security.md`](docs/security.md). Data surfaces and provider data policies in [`docs/data-handling.md`](docs/data-handling.md). Headline: v0.3 still assumes local/trusted-host deployment, but the MCP server now ships an `authorize` hook so a downstream consumer can plug in real per-caller auth without forking the server.
 
 ## Roadmap
 
-- **v0.1 - streaming sink.** Kafka, embed, Qdrant. Batched, redacted, deterministic upsert, halt-on-failure semantics. Done.
-- **v0.2 - MCP server.** `list_topics`, `describe_topic`, `search_events`, `find_similar_events`. Topic allowlist, rate limit, embed cache, value truncation. This release.
-- **v0.3 - semantic catalog.** Auto-discover topics, fetch schemas, surface them as MCP resources so agents can ask which topic to query before constructing one.
-- **Later.** Multi-sink (Pinecone, Weaviate, pgvector). Jinja text-extraction templates. Kafka Connect packaging. Prometheus `/metrics`. SASL/SSL Kafka, SR auth, SSE auth.
+- **v0.1 — streaming sink.** Kafka, embed, Qdrant. Batched, redacted, deterministic upsert, halt-on-failure semantics. Done.
+- **v0.2 — MCP server.** `list_topics`, `describe_topic`, `search_events`, `find_similar_events`. Topic allowlist, rate limit, embed cache, value truncation. Done.
+- **v0.3 — semantic catalog.** Schema introspection, sample-backed inferred descriptions, per-field meanings, relationship detection, daily LLM spend ceiling, PII redaction at persistence. Three new MCP tools: `find_topics_by_purpose`, `get_topic_relationships`, `explain_field`. This release.
+- **Later.** Bidirectional flow (agents producing into Kafka with schema validation). Kafka Connect packaging. Multi-sink (Pinecone, Weaviate, pgvector). Jinja text-extraction templates. Prometheus `/metrics`. SASL/SSL Kafka, SR auth, SSE auth.
 
 ## Development
 
