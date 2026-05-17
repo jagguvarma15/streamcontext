@@ -35,6 +35,10 @@ from streamcontext.catalog.models import (
     SampleMessage,
     TopicEntry,
 )
+from streamcontext.catalog.privacy import (
+    compile_patterns as _privacy_compile_patterns,
+    redact_value as _privacy_redact_value,
+)
 from streamcontext.catalog.store import CatalogStore
 from streamcontext.logging import get_logger
 
@@ -219,46 +223,31 @@ def build_llm_provider(
 # ----------------------------------------------------------- prompt building
 
 
-_DEFAULT_PII_PATTERNS: tuple[tuple[str, str], ...] = (
-    (r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b", "[email]"),
-    (r"\b(?:\+?\d{1,3}[\s-]?)?(?:\(?\d{3}\)?[\s-]?)?\d{3}[\s-]?\d{4}\b", "[phone]"),
-    (r"\b\d{13,19}\b", "[card]"),
-    (r"\b\d{3}-\d{2}-\d{4}\b", "[ssn]"),
-)
-
-
 def redact_value(
     value: Any,
     *,
     drop_fields: frozenset[str],
     patterns: tuple[re.Pattern[str], ...] = (),
 ) -> Any:
-    """Return a redacted copy of `value`: drop fields by name, mask patterns."""
-    if isinstance(value, dict):
-        return {
-            k: redact_value(v, drop_fields=drop_fields, patterns=patterns)
-            for k, v in value.items()
-            if k not in drop_fields
-        }
-    if isinstance(value, list):
-        return [redact_value(v, drop_fields=drop_fields, patterns=patterns) for v in value]
-    if isinstance(value, str):
-        out = value
-        for pat in patterns:
-            out = pat.sub("[redacted]", out)
-        return out
-    return value
+    """Defensive wrapper around the privacy module's redactor.
+
+    Inference samples are already redacted by the catalog builder; this stays
+    in place so a misconfigured builder cannot accidentally leak through.
+    """
+    return _privacy_redact_value(value, drop_fields=drop_fields, patterns=patterns)
 
 
 def compile_patterns(extra: list[str] | None = None) -> tuple[re.Pattern[str], ...]:
-    """Combine the built-in PII patterns with operator-supplied regexes."""
-    compiled: list[re.Pattern[str]] = [re.compile(p, re.IGNORECASE) for p, _ in _DEFAULT_PII_PATTERNS]
+    """Compile the configured patterns. Bad regexes are logged and skipped."""
+    valid: list[str] = []
     for raw in extra or []:
         try:
-            compiled.append(re.compile(raw, re.IGNORECASE))
+            re.compile(raw)
         except re.error as exc:
             log.warning("catalog.pii.bad_pattern", pattern=raw, error=str(exc))
-    return tuple(compiled)
+            continue
+        valid.append(raw)
+    return _privacy_compile_patterns(valid)
 
 
 def _condensed_schema(fields: list[FieldEntry]) -> list[dict[str, Any]]:
