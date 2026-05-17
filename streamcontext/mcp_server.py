@@ -10,7 +10,7 @@ through Qdrant only — no in-process coupling. See `docs/architecture.md`.
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated, Any
+from typing import Annotated, Any, Awaitable, Callable
 
 from fastmcp import FastMCP
 from pydantic import Field
@@ -31,6 +31,41 @@ from streamcontext.mcp_search import EventNotFoundError, SearchEngine
 from streamcontext.rate_limit import ToolRateLimiter
 
 log = get_logger("streamcontext.mcp.server")
+
+# Type alias for the authorization hook. Implementations get the tool name and
+# return None to allow the call, or a ToolError to deny it. The hook runs
+# *before* the rate limiter so denied calls do not consume tokens.
+AuthorizationHook = Callable[[str], Awaitable["ToolError | None"]]
+
+
+def make_gate(
+    *,
+    authorize: AuthorizationHook | None,
+    limiter: ToolRateLimiter,
+) -> Callable[[str], Awaitable["ToolError | None"]]:
+    """Compose the per-tool authorization + rate-limit check.
+
+    Returned as a standalone async callable so it is testable without
+    standing up the FastMCP transport.
+    """
+
+    async def gate(tool: str) -> "ToolError | None":
+        if authorize is not None:
+            denied = await authorize(tool)
+            if denied is not None:
+                log.info("mcp.unauthorized", tool=tool, code=denied.code)
+                return denied
+        ok, retry = limiter.check(tool)
+        if ok:
+            return None
+        log.warning("mcp.rate_limited", tool=tool, retry_after_sec=round(retry, 2))
+        return ToolError(
+            code="rate_limited",
+            message=f"{tool} rate-limited; retry in {retry:.1f}s.",
+        )
+
+    return gate
+
 
 SERVER_NAME = "streamcontext"
 SERVER_INSTRUCTIONS = (
@@ -54,24 +89,27 @@ SERVER_INSTRUCTIONS = (
 )
 
 
-def build_server(engine: SearchEngine, settings: Settings) -> FastMCP:
-    """Construct a FastMCP server with all v0.2 tools registered.
+def build_server(
+    engine: SearchEngine,
+    settings: Settings,
+    *,
+    authorize: AuthorizationHook | None = None,
+) -> FastMCP:
+    """Construct a FastMCP server with all tools registered.
 
     The engine is injected so unit tests can build a server against fakes.
+
+    `authorize` is an optional hook called before every tool runs. The
+    default is no-op (anyone reachable on the transport may call any tool);
+    in a multi-tenant deployment, plug in a real check here. The hook
+    receives the tool name and returns either None (allow) or a ToolError
+    (deny). The error code should be `not_authorized` so agents can
+    distinguish missing permissions from other failures.
     """
     mcp = FastMCP(name=SERVER_NAME, instructions=SERVER_INSTRUCTIONS)
     timeout = settings.mcp_tool_timeout_sec
     limiter = ToolRateLimiter(settings.mcp_rate_limit_per_minute)
-
-    def _rate_limit(tool: str) -> ToolError | None:
-        ok, retry = limiter.check(tool)
-        if ok:
-            return None
-        log.warning("mcp.rate_limited", tool=tool, retry_after_sec=round(retry, 2))
-        return ToolError(
-            code="rate_limited",
-            message=f"{tool} rate-limited; retry in {retry:.1f}s.",
-        )
+    _gate = make_gate(authorize=authorize, limiter=limiter)
 
     @mcp.tool()
     async def search_events(
@@ -151,7 +189,7 @@ def build_server(engine: SearchEngine, settings: Settings) -> FastMCP:
         Each result includes the original record value plus its Kafka
         coordinates. Set `diverse=true` to dedupe near-identical results.
         """
-        denied = _rate_limit("search_events")
+        denied = await _gate("search_events")
         if denied is not None:
             return denied
         try:
@@ -186,7 +224,7 @@ def build_server(engine: SearchEngine, settings: Settings) -> FastMCP:
         the oldest and newest record timestamps when known. Call this before
         `search_events` if the user names a topic you have not seen yet.
         """
-        denied = _rate_limit("list_topics")
+        denied = await _gate("list_topics")
         if denied is not None:
             return denied
         try:
@@ -226,7 +264,7 @@ def build_server(engine: SearchEngine, settings: Settings) -> FastMCP:
         exist on records in this topic. If Schema Registry is unreachable the
         `schema_summary` field will be null.
         """
-        denied = _rate_limit("describe_topic")
+        denied = await _gate("describe_topic")
         if denied is not None:
             return denied
         try:
@@ -272,7 +310,7 @@ def build_server(engine: SearchEngine, settings: Settings) -> FastMCP:
         description. Useful when the user describes a goal but does not name
         a topic. Requires the semantic catalog to be enabled.
         """
-        denied = _rate_limit("find_topics_by_purpose")
+        denied = await _gate("find_topics_by_purpose")
         if denied is not None:
             return denied
         try:
@@ -308,7 +346,7 @@ def build_server(engine: SearchEngine, settings: Settings) -> FastMCP:
         the user asks a question that crosses topic boundaries so you can
         identify the joining field before searching.
         """
-        denied = _rate_limit("get_topic_relationships")
+        denied = await _gate("get_topic_relationships")
         if denied is not None:
             return denied
         try:
@@ -353,7 +391,7 @@ def build_server(engine: SearchEngine, settings: Settings) -> FastMCP:
         confidence, plus a handful of example values pulled from recent
         samples so the agent can write accurate filter predicates.
         """
-        denied = _rate_limit("explain_field")
+        denied = await _gate("explain_field")
         if denied is not None:
             return denied
         try:
@@ -404,7 +442,7 @@ def build_server(engine: SearchEngine, settings: Settings) -> FastMCP:
         looking at, retrieve more like it. The reference itself is excluded
         from the results.
         """
-        denied = _rate_limit("find_similar_events")
+        denied = await _gate("find_similar_events")
         if denied is not None:
             return denied
         try:

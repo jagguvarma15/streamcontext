@@ -17,6 +17,7 @@ from streamcontext.catalog.models import (
     SampleMessage,
     TopicEntry,
 )
+from streamcontext.catalog.privacy import compile_patterns, redact_value
 from streamcontext.catalog.store import CatalogStore
 from streamcontext.logging import get_logger
 
@@ -42,6 +43,8 @@ class CatalogBuilder:
         self._profiler = profiler
         self._config = config or CatalogConfig()
         self._inference = inference
+        self._patterns = compile_patterns(self._config.pii_redact_patterns)
+        self._drop_fields = frozenset(self._config.pii_redact_fields)
 
     @property
     def config(self) -> CatalogConfig:
@@ -91,14 +94,22 @@ class CatalogBuilder:
             self._store.upsert_topic(entry)
 
         if samples and self._sampler is not None:
-            sampled = await self._sampler.sample(topic, count=self._config.sample_count)
+            sampled_raw = await self._sampler.sample(topic, count=self._config.sample_count)
+            sampled = [self._redact_sample(s) for s in sampled_raw]
             entry.samples = sampled
             entry.last_sample_refresh_ms = now_ms
             self._store.replace_samples(
                 topic, sampled, retain=self._config.retain_samples
             )
             self._store.upsert_topic(entry)
-            log.info("catalog.refresh.samples", topic=topic, n=len(sampled))
+            log.info(
+                "catalog.refresh.samples",
+                topic=topic,
+                n=len(sampled),
+                retained=self._config.retain_samples,
+                drop_fields=len(self._drop_fields),
+                regex_patterns=len(self._patterns),
+            )
 
         if stats:
             activity = await self._profiler.profile(topic)
@@ -118,6 +129,27 @@ class CatalogBuilder:
             await self._run_inference(entry)
 
         return entry
+
+    def _redact_sample(self, sample: SampleMessage) -> SampleMessage:
+        """Apply the configured PII redaction to a sample message in flight.
+
+        Runs before any persistence or LLM submission. The catalog never
+        sees an unredacted sample.
+        """
+        if not self._drop_fields and not self._patterns:
+            return sample
+        scrubbed = redact_value(
+            sample.value, drop_fields=self._drop_fields, patterns=self._patterns
+        )
+        if not isinstance(scrubbed, dict):
+            scrubbed = {}
+        return SampleMessage(
+            partition=sample.partition,
+            offset=sample.offset,
+            timestamp_ms=sample.timestamp_ms,
+            key=sample.key,
+            value=scrubbed,
+        )
 
     async def _run_inference(self, entry: "TopicEntry") -> None:
         assert self._inference is not None
