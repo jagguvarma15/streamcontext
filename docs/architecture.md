@@ -1,8 +1,8 @@
 # Architecture
 
-streamcontext runs as two cooperating processes that share state through a vector store. They scale, fail, and deploy independently.
+streamcontext runs as three cooperating processes that share state through a vector store and a SQLite catalog file. They scale, fail, and deploy independently.
 
-## Two-process picture
+## Three-process picture
 
 ```
    ──────── ingestion process (streamcontext.main) ────────
@@ -38,20 +38,61 @@ streamcontext runs as two cooperating processes that share state through a vecto
         |   Qdrant      |  <----+  shared substrate
         |  collection   |       |
         +---------------+       |
-                                |
-                                |
-   ──────── MCP process (streamcontext.mcp_main) ────────
-                                |
+              ^                 |
+              | reads stats     |
+              |                 |
+   ──── catalog refresher (streamcontext.catalog.refresher) ────
+              |                 |
    +--------------------------+ |
-   |  mcp_search.py           |-+
+   |  introspect.py           | |  Schema Registry walk, Avro flatten,
+   |  SchemaIntrospector      | |  SHA-256 fingerprint
+   +-------------+------------+ |
+                 |              |
+   +--------------------------+ |
+   |  introspect.py           | |  Short-lived aiokafka consumer
+   |  MessageSampler          | |  (fresh group id, latest, redacted)
+   +-------------+------------+ |
+                 |              |
+   +--------------------------+ |
+   |  activity.py             | |  Rolling counters from Qdrant payload
+   |  ActivityProfiler        |-+
+   +-------------+------------+
+                 |
+   +--------------------------+   Topic descriptions + field meanings,
+   |  inference.py            |   cached by (fingerprint, sample_hash)
+   |  InferenceEngine         |   daily LLM spend ceiling enforced
+   +-------------+------------+
+                 |
+   +--------------------------+   Heuristic shared-key + sample overlap;
+   |  relationships.py        |   optional LLM polish for semantic links
+   |  RelationshipDetector    |
+   +-------------+------------+
+                 |
+                 v
+        +-----------------------+
+        |  CatalogStore         |  SQLite (WAL). One file, three readers.
+        |  (catalog.sqlite)     |
+        +-----------+-----------+
+                    ^
+                    |
+   ──────── MCP process (streamcontext.mcp_main) ────────
+                    |
+   +--------------------------+ +
+   |  mcp_search.py           |-+ reads catalog
    |  SearchEngine            |   embeds queries, builds Qdrant filters,
    |                          |   enforces topic allowlist + caps
    +-------------+------------+
                  |
                  v
    +--------------------------+
-   |  mcp_server.py           |   FastMCP wrapper, per-tool timeout
-   |  tools: search_events    |   structured ToolError on failure
+   |  mcp_server.py           |   FastMCP wrapper, per-tool timeout,
+   |  tools: search_events,   |   authorize hook, rate limit
+   |   list_topics,           |
+   |   describe_topic,        |
+   |   find_topics_by_purpose,|
+   |   get_topic_relationships,|
+   |   explain_field,         |
+   |   find_similar_events    |
    +-------------+------------+
                  |
         stdio / SSE transport
@@ -61,13 +102,13 @@ streamcontext runs as two cooperating processes that share state through a vecto
        (Claude Desktop, Cursor, Cline, custom)
 ```
 
-### Why two processes
+### Why three processes
 
-- Different scaling profiles. Ingestion is throughput-bound and lives near Kafka. The MCP server is latency-bound and lives near the agent (often on the user's laptop).
-- Different failure modes. A wedged embedder model in ingestion shouldn't take down the agent's read path; a leaking MCP transport shouldn't lose Kafka offsets.
-- Different deploy patterns. Ingestion runs in a server process you supervise (compose, k8s, systemd). The MCP server is typically launched per-agent-session by the host application (Claude Desktop spawns it on demand).
+- Different scaling profiles. Ingestion is throughput-bound and lives near Kafka. The MCP server is latency-bound and lives near the agent (often on the user's laptop). The catalog refresher is bursty — it does periodic heavy work then sleeps — and is naturally a job, not a service.
+- Different failure modes. A wedged embedder model in ingestion shouldn't take down the agent's read path; a leaking MCP transport shouldn't lose Kafka offsets; a misbehaving LLM provider in the catalog shouldn't break either of the other two. The catalog can be entirely absent and the v0.2 tools still work.
+- Different deploy patterns. Ingestion runs in a server process you supervise (compose, k8s, systemd). The MCP server is typically launched per-agent-session by the host application (Claude Desktop spawns it on demand). The catalog refresher is a cron-style job (`--loop` or scheduled).
 
-The only coupling is the Qdrant collection name, the embedder model, and the vector dim. All three are env-driven and validated at startup of each process.
+The only couplings are the Qdrant collection name plus the catalog SQLite file path. The embedder model and vector dim are shared between ingestion and the MCP server only; the catalog never touches them.
 
 ## Design decisions
 
@@ -99,7 +140,21 @@ The MCP server enforces `SC_MCP_TOPIC_ALLOWLIST` at the engine layer: an explici
 
 The gateway only reads schemas to deserialize messages. It never registers new ones. The producer (in `examples/`) is the only thing that writes to SR, and that is purely for the demo.
 
+### Semantic catalog (v0.3)
+
+The third process turns the cluster into something an agent can reason
+about, not just search. For every configured topic it captures:
+
+- The Avro schema flattened to dotted-path `FieldEntry` records, with a SHA-256 fingerprint over the canonical JSON used as a cache key.
+- A bounded window of recent sample messages, redacted before persistence (see `streamcontext/catalog/privacy.py`).
+- Rolling activity counters derived from the Qdrant payload (no extra Kafka load).
+- LLM-inferred natural-language description and per-field meanings, cached by `(schema_fingerprint, sample_hash)` so identical inputs cost zero on the second pass.
+- Heuristic relationships across topics (shared keys, foreign references, sample-value overlap) plus an optional LLM polish for semantic links the heuristic cannot see.
+
+All of it lands in `SC_CATALOG_DB_PATH` (SQLite, WAL mode). The MCP server reads from the same file to surface the data through `list_topics`, `describe_topic`, `find_topics_by_purpose`, `get_topic_relationships`, and `explain_field`. The refresher writes; the MCP server only reads. Full design in [`catalog.md`](catalog.md), data-handling and provider policies in [`data-handling.md`](data-handling.md), audit in [`audit-v0.3.md`](audit-v0.3.md).
+
 ## Future layers (not yet shipped)
 
-- v0.3 semantic catalog. Auto-discovers topics, fetches schemas from SR, indexes field names plus descriptions, exposes them as MCP resources so agents can ask "which topic carries customer events?" before querying.
-- v0.2.x hardening. Per-tool rate limits, query LRU on the embedder, payload-field indexes in Qdrant for fast filter+vector search. Tracked in the Day 5 plan.
+- Bidirectional flow. Agents producing back into Kafka with schema validation. Hardest safety problem in the project; deferred until the catalog is rock-solid.
+- Kafka Connect packaging. Repackage the ingestion pipeline as a proper Kafka Connect sink connector. Dramatically expands the production audience.
+- Production deployment guides. Helm chart, Terraform module, observability dashboards.
