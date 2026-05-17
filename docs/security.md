@@ -1,17 +1,18 @@
 # Security
 
-This page is for someone deciding whether streamcontext is safe to point at their data. It covers the threat model the project is designed against, what the two processes do and do not protect, and where the audit trail lives.
+This page is for someone deciding whether streamcontext is safe to point at their data. It covers the threat model the project is designed against, what the three processes do and do not protect, and where the audit trail lives.
 
 ## Threat model in plain language
 
-streamcontext v0.2 assumes:
+streamcontext v0.3 assumes:
 
 - The ingestion gateway runs on infrastructure the operator controls, on a network where the Kafka cluster and Qdrant are reachable but not directly exposed to the internet.
 - The MCP server runs alongside the operator's own agent host (Claude Desktop, Cursor, Cline, or a custom local agent). It is launched and torn down by that host. The connection between agent and MCP server is stdio (default) or SSE on loopback (`127.0.0.1`).
+- The catalog refresher runs as a job on the same trust boundary as the gateway. It needs read access to Kafka, Schema Registry, and Qdrant, plus write access to the catalog SQLite file the MCP server reads.
 - The operator is the one configuring which Kafka topics the gateway ingests and which the MCP server exposes. They are not multi-tenant; one set of topics, one agent surface.
 - Producers writing to Kafka are inside the operator's trust boundary in the sense that they could already corrupt the stream. streamcontext does not attempt to detect or quarantine malicious producers - it does protect downstream agents from the fallout (see Payload redaction below).
 
-**Out of scope for v0.2:** multi-tenant gateway deployments, authenticated SSE transport, internet-exposed MCP servers, Kafka auth (SASL/SCRAM/mTLS), Schema Registry auth, fine-grained per-agent access control. All of these are tracked as v1.0 work in `audit-v0.1.md` and `audit-v0.2.md`.
+**Out of scope for v0.3:** multi-tenant gateway deployments, authenticated SSE transport, internet-exposed MCP servers, Kafka auth (SASL/SCRAM/mTLS), Schema Registry auth, fine-grained per-agent access control. The MCP server now ships an `authorize` hook (`build_server(authorize=...)`) so a downstream deployment that needs per-caller auth can plug a real check in without forking — but no auth is shipped in-tree. All of these remain tracked as v1.0 work in `audit-v0.1.md`, `audit-v0.2.md`, and `audit-v0.3.md`.
 
 ## What the gateway protects against
 
@@ -51,9 +52,17 @@ SC_MCP_TOOL_TIMEOUT_SEC=5
 SC_MCP_RATE_LIMIT_PER_MINUTE=60                        # per tool; tighten further for paid embedders
 SC_MCP_EMBED_CACHE_SIZE=512                            # higher for chat-style usage
 SC_MCP_MAX_VALUE_BYTES=4096
+
+# Catalog refresher (third process)
+SC_CATALOG_DB_PATH=/var/lib/streamcontext/catalog.sqlite
+SC_CATALOG_LLM_PROVIDER=anthropic                      # or 'openai' / 'local'; 'disabled' to skip LLM inference entirely
+SC_CATALOG_LLM_MODEL=claude-haiku-4-5-20251001
+SC_CATALOG_LLM_DAILY_CEILING_USD=1.0                   # hard daily cap, persisted in SQLite ledger
+SC_CATALOG_PII_FIELDS=email,phone,card_number,ssn,authorization
+SC_CATALOG_RETAIN_SAMPLES=true                          # set false to keep only metadata in SQLite
 ```
 
-If you are using a paid embedding provider (OpenAI, Cohere, Voyage) the rate limit and the cache are how you bound your bill. The rate limit gives you the worst case; the cache gives you the typical case.
+If you are using a paid embedding provider (OpenAI, Cohere, Voyage) the rate limit and the cache are how you bound your bill. The rate limit gives you the worst case; the cache gives you the typical case. Catalog LLM spend is bounded separately by `SC_CATALOG_LLM_DAILY_CEILING_USD`.
 
 ## Audit documents
 
@@ -61,8 +70,9 @@ The full audit trail lives in:
 
 - `docs/audit-v0.1.md` - gateway audit before MCP work began. Twelve security findings, nine resolved; three deferred to v0.2.x (SASL/SSL, Schema Registry auth, HTTP `/metrics`).
 - `docs/audit-v0.2.md` - MCP-layer audit before the v0.2.0 cut. Twelve security findings and four functional findings; nine of the security findings are fixed in v0.2.0, two tracked for v0.2.x (concurrency semaphore, SSE auth), one deferred (per-tool rate-limit knobs).
+- `docs/audit-v0.3.md` - semantic-catalog audit before the v0.3.0 cut. Cost, privacy, correctness, and operational findings; all v0.3 blockers resolved, with deferred items tracked.
 
-Both follow the same Block / Fix in next release / Defer / Resolved categorization. Each finding cites the file and code construct that addresses (or fails to address) it.
+All three follow the same Block / Fix in next release / Defer / Resolved categorization. Each finding cites the file and code construct that addresses (or fails to address) it.
 
 ## Reporting a vulnerability
 

@@ -2,6 +2,64 @@
 
 All notable changes to streamcontext are documented here. Format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] - The semantic catalog
+
+streamcontext is now three cooperating processes: the v0.2 ingestion gateway and MCP server, plus a new catalog refresher that turns every topic into something an agent can reason about. Agents stop guessing at field names and start querying a catalog that knows the shape, the meaning, and the relationships of every topic in the cluster.
+
+### Now possible
+- Multi-topic agent questions ("find all failed payments and the orders they're attached to") — the catalog encodes the join graph once so the agent does not have to read three Avro schemas to find it.
+- Field-level reasoning ("what does `risk_score` actually mean?") — every field carries an LLM-inferred meaning and a confidence in [0, 1], plus a handful of real example values drawn from samples.
+- Purpose-based discovery ("where is the billing data?") — `find_topics_by_purpose` embeds the user's intent and ranks topics by similarity to their inferred descriptions, with a synthesized fallback when inference is disabled.
+- Automatic relationship discovery — shared keys, foreign references, and (optionally) LLM-detected semantic links like `payment_attempts ↔ order_completions` even when no field names overlap.
+
+### Added — semantic catalog (`streamcontext.catalog`)
+- `CatalogStore`: SQLite-backed persistence (WAL mode, one file shared between the refresher and the MCP server). Tables for topics, fields, samples, activity, relationships, an inference cache, and a daily LLM-spend ledger.
+- `SchemaIntrospector`: walks Schema Registry, flattens Avro records (nested fields, arrays-of-records, unions-with-null) into dotted-path `FieldEntry` rows, and computes a SHA-256 fingerprint over the canonical schema JSON.
+- `MessageSampler`: short-lived `aiokafka` consumer with a fresh group id and `auto_offset_reset=latest`, so the catalog never disturbs production offsets.
+- `ActivityProfiler`: rolling counters (last hour, last day) derived from the Qdrant payload — no additional Kafka load.
+- `InferenceEngine`: LLM-powered topic descriptions and per-field meanings. Cached by `(schema_fingerprint, sample_hash)` so identical inputs never bill twice. Bounded prompt size; structured JSON output with confidence scores. Providers: `AnthropicProvider` (default, Claude Haiku), `OpenAIProvider`, `LocalLLMProvider` (Ollama-compatible).
+- `RelationshipDetector`: heuristic shared-key + sample-value overlap, plus an optional LLM polish layer for semantic links the heuristic cannot see. Results stored with type (`shared_key`, `foreign_reference`, `event_chain`, `semantic`) and confidence.
+- `CatalogBuilder`: per-topic refresh orchestrator with per-aspect TTLs (`schema`, `samples`, `stats`, `inference` each track their own freshness).
+- `streamcontext.catalog.refresher`: `python -m streamcontext.catalog.refresher` entrypoint, one-shot or `--loop`.
+
+### Added — MCP layer
+- New tools: `find_topics_by_purpose(description, limit?)`, `get_topic_relationships(topic)`, `explain_field(topic, field)`. Catalog-aware enrichment of `list_topics` (descriptions surface on every entry) and `describe_topic` (inferred meanings overlaid on the Schema Registry view, inference status reported).
+- `CatalogReader` (`streamcontext.mcp_catalog`): read-only wrapper around `CatalogStore` for the MCP server. Honours the same `SC_MCP_TOPIC_ALLOWLIST`; relationships pointing to off-allowlist topics are filtered out so the catalog cannot leak topic names.
+- `streamcontext.mcp_server.build_server(authorize=...)`: optional async hook called before every tool. Composed with the rate limiter via the testable `make_gate` helper. Default no-op preserves v0.2 behaviour; downstream deployments needing per-caller auth can plug a real check in without forking.
+- New response models: `TopicMatch`, `FindTopicsResponse`, `RelationshipInfo`, `RelationshipsResponse`, `FieldExplanation`. `SchemaField` and `TopicDescription` gained inferred-meaning/confidence/status fields.
+
+### Added — privacy and cost controls
+- `streamcontext.catalog.privacy`: centralized PII redaction (field-name drop + regex masking). Built-in patterns for emails, phone numbers, 13–19 digit card numbers, and SSNs. Operator-supplied patterns via `SC_CATALOG_PII_PATTERNS`; field allowlist via `SC_CATALOG_PII_FIELDS`.
+- Samples are redacted **before** they land in SQLite — not just before LLM submission. The inference layer reapplies the same patterns defensively.
+- `SC_CATALOG_RETAIN_SAMPLES=false` keeps metadata only: samples flow through in-memory for inference and are discarded.
+- `SC_CATALOG_LLM_DAILY_CEILING_USD` enforces a daily spend cap per provider, persisted in the catalog's SQLite ledger. Once tripped, inference returns `disabled` status and agents see schema-only entries until UTC rollover.
+- `docs/data-handling.md` documents what data each surface holds and the default retention policies for the supported LLM providers.
+
+### Added — documentation
+- `docs/catalog.md`: catalog deep-dive (process model, aspects, configuration, PII, cost ceiling, staleness contract, operational notes).
+- `docs/audit-v0.3.md`: third-pass audit covering cost, privacy, correctness, and operational findings. All v0.3 blockers resolved; deferred items tracked.
+- `docs/architecture.md`: rewritten around the three-process picture.
+- `docs/example-conversations.md`: three new conversation patterns showing catalog-driven discovery, multi-topic joins, and field explanation.
+- `docs/blog/why-kafka-needs-a-semantic-catalog.md`: positioning piece on how this differs from DataHub / Atlan / Alation.
+- `docs/demo-script.md`: three-minute walkthrough storyboard for the release video.
+- README rewritten around the self-describing-streams framing; semantic-catalog config table; updated tool table; v0.3.0 status badge.
+
+### Configuration (new env vars)
+- `SC_CATALOG_DB_PATH`, `SC_CATALOG_TOPICS`, `SC_CATALOG_SCHEMA_REFRESH_SEC`, `SC_CATALOG_SAMPLE_REFRESH_SEC`, `SC_CATALOG_STATS_REFRESH_SEC`, `SC_CATALOG_INFERENCE_REFRESH_SEC`.
+- `SC_CATALOG_SAMPLE_COUNT`, `SC_CATALOG_SAMPLE_TIMEOUT_SEC`, `SC_CATALOG_RETAIN_SAMPLES`, `SC_CATALOG_ENABLE_SAMPLING`.
+- `SC_CATALOG_LLM_PROVIDER`, `SC_CATALOG_LLM_MODEL`, `SC_CATALOG_LLM_DAILY_CEILING_USD`, `SC_CATALOG_LLM_MAX_INPUT_TOKENS`.
+- `SC_CATALOG_PII_FIELDS`, `SC_CATALOG_PII_PATTERNS`.
+- `SC_CATALOG_RELATIONSHIP_MIN_OVERLAP`, `SC_CATALOG_RELATIONSHIP_LLM_THRESHOLD`.
+
+### Testing
+- 60+ new unit tests across `tests/test_catalog.py`, `test_catalog_inference.py`, `test_catalog_relationships.py`, `test_catalog_privacy.py`, `test_mcp_catalog.py`, `test_mcp_authorization.py`. End-to-end cost-ceiling recovery test (`test_inference_disables_after_ceiling_and_recovers`) verifies the engine flips to `disabled` once spend crosses the cap and re-enables when the cap is lifted. All collaborators (Schema Registry, Kafka sampler, Qdrant, LLM providers) faked — no network in CI.
+- Full suite: 109 passing (ignoring `test_pipeline.py`, which depends on `aiokafka` and is unchanged from v0.2).
+
+### Notes
+- v0.3 keeps the trusted-host threat model. The new `authorize` hook is the seam for per-caller auth in a downstream deployment; no auth is shipped in-tree.
+- The catalog is **off by default**: with `SC_CATALOG_LLM_PROVIDER=disabled` (default), only deterministic catalog features (schema introspection, sample storage, activity stats, heuristic relationships) run. Enable a provider deliberately and pick one whose data-retention policy matches your requirements.
+- Practical day-zero cost on a 10-topic cluster with Claude Haiku: well under $0.05 once the cache is warm.
+
 ## [0.2.0] - Week 2 cut: MCP server, audited and hardened
 
 Consolidates the four `0.2.0a*` previews into a single release. streamcontext is now two processes - the ingestion gateway from v0.1 plus a new MCP server - sharing a Qdrant collection. MCP-compatible agents (Claude Desktop, Cursor, Cline, custom) query the vector store as a tool.
