@@ -42,7 +42,7 @@ Where: `streamcontext/config.py`, `streamcontext/consumer.py` (`start`).
 
 `AIOKafkaConsumer` is constructed with bootstrap, group, offset-reset, and timeouts only. Every production Kafka cluster requires `security_protocol=SASL_SSL` plus credentials. Currently impossible to configure without code changes.
 
-Plan: add SASL/SSL knobs in v0.2.x. Documented in `docs/security.md` (Day 6). Not a blocker because v0.1 explicitly targets local-dev and trusted-network deployments.
+Plan: add SASL/SSL knobs in v0.2.x. Documented in `docs/security.md`. Not a blocker because v0.1 explicitly targets local-dev and trusted-network deployments.
 
 ### S5 (Fix in v0.2) Schema Registry HTTP only, no auth
 
@@ -82,19 +82,19 @@ Fix today: add a process-alive healthcheck (`pgrep -f streamcontext.main`).
 
 ### G2 (Fix in v0.2) No `/health` or `/metrics` HTTP endpoint
 
-Where: entire gateway. Day 5 of the Week 2 plan adds these.
+Where: entire gateway. A later v0.2 hardening pass adds these.
 
 ### G3 (Fix in v0.2) No query cache on the embedder
 
 Where: `streamcontext/embedder.py` (`OpenAIEmbedder`).
 
-When the MCP server's `search_events` tool calls `embed()` for every agent query, OpenAI bills are unbounded. Day 5 of the Week 2 plan adds a query LRU.
+When the MCP server's `search_events` tool calls `embed()` for every agent query, OpenAI bills are unbounded. A later v0.2 hardening pass adds a query LRU.
 
 ### G4 (Fix in v0.2) Filterable payload fields not indexed in Qdrant
 
 Where: `streamcontext/sink.py` (`QdrantSink.ensure_ready`).
 
-Qdrant supports payload indexes for filterable fields (`status`, `region`, etc.). Without them, MCP filter queries do full-collection scans. Day 4 of the Week 2 plan adds these.
+Qdrant supports payload indexes for filterable fields (`status`, `region`, etc.). Without them, MCP filter queries do full-collection scans. A later v0.2 pass adds these.
 
 ### G5 (Defer) Backfill mode for existing topics
 
