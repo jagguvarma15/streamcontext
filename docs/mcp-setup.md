@@ -13,7 +13,7 @@ This is the v0.2 layer. v0.1 only had the ingestion sink — see `docs/architect
 | `search_events` | Semantic search over the vector store. Returns Kafka records ranked by relevance, with `topic:partition:offset:timestamp_ms` coordinates. Supports `topic`, `time_range_minutes`, and `score_threshold` filters. |
 | `find_similar_events` | Given a `topic:partition:offset` reference, return semantically similar records. Useful for incident-style "more like this" queries. |
 
-Day 4 adds payload-field indexes for richer filter queries; Day 5 adds rate limiting, an embedding LRU, and the second audit pass. See `CHANGELOG.md`.
+Payload-field indexes enable richer filter queries; rate limiting, an embedding LRU, and the second audit pass round out the v0.2 layer. See `CHANGELOG.md`.
 
 ## Prerequisites
 
