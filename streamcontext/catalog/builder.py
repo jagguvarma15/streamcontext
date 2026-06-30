@@ -7,7 +7,6 @@ inference pass are coordinated here so callers refresh in one place.
 from __future__ import annotations
 
 import time
-from typing import Any
 
 from streamcontext.catalog.activity import ActivityProfiler
 from streamcontext.catalog.inference import InferenceEngine
@@ -151,7 +150,7 @@ class CatalogBuilder:
             value=scrubbed,
         )
 
-    async def _run_inference(self, entry: "TopicEntry") -> None:
+    async def _run_inference(self, entry: TopicEntry) -> None:
         assert self._inference is not None
         if not entry.fields:
             log.debug("catalog.inference.skip_no_fields", topic=entry.name)
