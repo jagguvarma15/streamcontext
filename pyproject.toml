@@ -76,3 +76,13 @@ python_version = "3.11"
 files = ["streamcontext"]
 ignore_missing_imports = true
 warn_redundant_casts = true
+
+# These libraries ship py.typed but their stubs are large and version-sensitive
+# (numpy/torch use 3.12+ syntax) or do not match the thin runtime protocols we
+# pass them through (qdrant_client). We check our own code at the call boundary
+# via the typed protocols in mcp_search.py; analysing the libraries themselves
+# adds noise without catching bugs in our code.
+[[tool.mypy.overrides]]
+module = ["qdrant_client.*", "numpy.*", "sentence_transformers.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
