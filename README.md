@@ -147,6 +147,7 @@ Everything is env-driven. The most useful knobs are below; see [`.env.example`](
 |---|---|---|
 | `SC_KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | |
 | `SC_KAFKA_TOPICS` | `orders` | Comma-separated. |
+| `SC_KAFKA_DLQ_TOPIC` | (empty) | Dead-letter topic for undeserializable messages. Empty = log-and-count only. |
 | `SC_SCHEMA_REGISTRY_URL` | `http://localhost:8081` | |
 | `SC_EMBEDDER_PROVIDER` | `local` | `local` (sentence-transformers) or `openai`. |
 | `SC_EMBEDDER_MODEL` | `all-MiniLM-L6-v2` | Change in lockstep with `SC_QDRANT_VECTOR_DIM`. |
@@ -186,6 +187,18 @@ Everything is env-driven. The most useful knobs are below; see [`.env.example`](
 | `SC_CATALOG_PII_FIELDS` | (empty) | csv of keys to drop from samples (e.g. `email,phone`). |
 | `SC_CATALOG_PII_PATTERNS` | (empty) | csv of regexes to mask inside string values. |
 
+### Observability
+
+The ingestion gateway and the catalog refresher each expose `/health` and a
+Prometheus `/metrics` endpoint. Full metric list, health semantics, and PromQL
+examples are in [`docs/observability.md`](docs/observability.md).
+
+| Variable | Default | Notes |
+|---|---|---|
+| `SC_METRICS_ENABLED` | `true` | Disable the metrics/health server entirely. |
+| `SC_METRICS_HOST` | `127.0.0.1` | Bind address. `0.0.0.0` to scrape from another host. |
+| `SC_METRICS_PORT` | `9108` | Co-located processes need distinct ports. |
+
 ## Security
 
 Three audit documents drive the security posture:
@@ -201,7 +214,7 @@ Threat model and recommended production-adjacent settings in [`docs/security.md`
 - **v0.1 — streaming sink.** Kafka, embed, Qdrant. Batched, redacted, deterministic upsert, halt-on-failure semantics. Done.
 - **v0.2 — MCP server.** `list_topics`, `describe_topic`, `search_events`, `find_similar_events`. Topic allowlist, rate limit, embed cache, value truncation. Done.
 - **v0.3 — semantic catalog.** Schema introspection, sample-backed inferred descriptions, per-field meanings, relationship detection, daily LLM spend ceiling, PII redaction at persistence. Three new MCP tools: `find_topics_by_purpose`, `get_topic_relationships`, `explain_field`. This release.
-- **Later.** Bidirectional flow (agents producing into Kafka with schema validation). Kafka Connect packaging. Multi-sink (Pinecone, Weaviate, pgvector). Jinja text-extraction templates. Prometheus `/metrics`. SASL/SSL Kafka, SR auth, SSE auth.
+- **Later.** Bidirectional flow (agents producing into Kafka with schema validation). Kafka Connect packaging. Multi-sink (Pinecone, Weaviate, pgvector). Jinja text-extraction templates. SASL/SSL Kafka, SR auth, SSE auth.
 
 ## Development
 
