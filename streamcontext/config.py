@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     kafka_topics: str = "orders"
     kafka_group_id: str = "streamcontext-gateway"
     kafka_auto_offset_reset: Literal["earliest", "latest"] = "earliest"
+    # Dead-letter topic for messages that fail Avro deserialization. Empty
+    # disables the DLQ (failures are logged only). When set, the raw message is
+    # republished to this topic with sc_origin_* and sc_error headers.
+    kafka_dlq_topic: str = ""
 
     # --- Schema Registry ---
     schema_registry_url: str = "http://localhost:8081"
@@ -127,6 +131,13 @@ class Settings(BaseSettings):
     # --- Observability ---
     log_level: str = "INFO"
     log_json: bool = True
+    # Prometheus /metrics + /health server on the gateway and catalog refresher.
+    # Binds 127.0.0.1 by default; set 0.0.0.0 to scrape from another host (and
+    # control exposure at the network layer). Co-located processes need distinct
+    # ports. A bind failure is logged, not fatal.
+    metrics_enabled: bool = True
+    metrics_host: str = "127.0.0.1"
+    metrics_port: int = Field(default=9108, ge=1, le=65535)
 
     @property
     def topics_list(self) -> list[str]:
