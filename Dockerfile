@@ -34,7 +34,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         librdkafka1 \
-        procps \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /install /usr/local
@@ -47,5 +47,9 @@ RUN useradd --create-home --uid 1001 streamcontext && \
     mkdir -p /home/streamcontext/.cache && \
     chown -R streamcontext:streamcontext /app /home/streamcontext
 USER streamcontext
+
+# Prometheus /metrics + /health (SC_METRICS_PORT). Documentation only; the
+# compose file publishes it to the host.
+EXPOSE 9108
 
 ENTRYPOINT ["python", "-m", "streamcontext.main"]

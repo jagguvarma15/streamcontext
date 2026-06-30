@@ -11,11 +11,12 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
-from aiokafka import AIOKafkaConsumer, TopicPartition
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroDeserializer
 from confluent_kafka.serialization import MessageField, SerializationContext
 
+from streamcontext import metrics as gw
 from streamcontext.config import Settings
 from streamcontext.logging import get_logger
 from streamcontext.types import KafkaMessage
@@ -29,6 +30,8 @@ class AvroKafkaConsumer:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._consumer: AIOKafkaConsumer | None = None
+        self._dlq_topic = settings.kafka_dlq_topic
+        self._producer: AIOKafkaProducer | None = None
         sr = SchemaRegistryClient({"url": settings.schema_registry_url})
         # Reader schema is None → use the writer schema embedded in each message
         # via the magic-byte / schema-id prefix. This is what we want for a
@@ -52,9 +55,18 @@ class AvroKafkaConsumer:
             heartbeat_interval_ms=10_000,
         )
         await self._consumer.start()
+        if self._dlq_topic:
+            self._producer = AIOKafkaProducer(
+                bootstrap_servers=self._settings.kafka_bootstrap_servers,
+            )
+            await self._producer.start()
+            log.info("consumer.dlq.enabled", dlq_topic=self._dlq_topic)
         log.info("consumer.started", topics=topics, group=self._settings.kafka_group_id)
 
     async def stop(self) -> None:
+        if self._producer is not None:
+            await self._producer.stop()
+            self._producer = None
         if self._consumer is not None:
             await self._consumer.stop()
             log.info("consumer.stopped")
@@ -84,6 +96,40 @@ class AvroKafkaConsumer:
                 out[k] = repr(v)
         return out
 
+    async def _handle_decode_failure(self, record: Any, exc: Exception) -> None:
+        """Count, log, and (if a DLQ is configured) republish an undecodable record."""
+        gw.DESERIALIZE_FAILURES.labels(topic=record.topic).inc()
+        log.warning(
+            "consumer.deserialize_failed",
+            topic=record.topic,
+            partition=record.partition,
+            offset=record.offset,
+            error=str(exc),
+            dlq=self._producer is not None,
+        )
+        if self._producer is None:
+            return
+        try:
+            await self._producer.send_and_wait(
+                self._dlq_topic,
+                value=record.value,
+                key=record.key if isinstance(record.key, bytes) else None,
+                headers=[
+                    ("sc_origin_topic", record.topic.encode("utf-8")),
+                    ("sc_origin_partition", str(record.partition).encode("utf-8")),
+                    ("sc_origin_offset", str(record.offset).encode("utf-8")),
+                    ("sc_error", str(exc)[:500].encode("utf-8")),
+                ],
+            )
+            gw.DLQ_PRODUCED.labels(topic=record.topic).inc()
+        except Exception:
+            log.exception(
+                "consumer.dlq_produce_failed",
+                topic=record.topic,
+                partition=record.partition,
+                offset=record.offset,
+            )
+
     async def messages(self) -> AsyncIterator[KafkaMessage]:
         """Yield decoded messages until the consumer is stopped."""
         assert self._consumer is not None, "consumer.start() must be called first"
@@ -92,14 +138,7 @@ class AvroKafkaConsumer:
                 try:
                     value = self._decode_value(record.topic, record.value)
                 except Exception as exc:
-                    # Dead-letter logging for now; DLQ topic lands in v0.2.
-                    log.warning(
-                        "consumer.deserialize_failed",
-                        topic=record.topic,
-                        partition=record.partition,
-                        offset=record.offset,
-                        error=str(exc),
-                    )
+                    await self._handle_decode_failure(record, exc)
                     continue
 
                 if value is None:
