@@ -24,7 +24,8 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from streamcontext.catalog.inference import InferenceEngine, _safe_json
 from streamcontext.catalog.models import (
@@ -273,7 +274,8 @@ class RelationshipDetector:
                     r.last_refresh_ms = now_ms
                     by_source[source.name].append(r)
                 if rels:
-                    key = tuple(sorted((source.name, target.name)))
+                    lo, hi = sorted((source.name, target.name))
+                    key = (lo, hi)
                     heuristic_pairs.add(key)
 
         if self._inference is not None and self._inference.enabled:
@@ -282,7 +284,8 @@ class RelationshipDetector:
                 for target in topics:
                     if source.name == target.name:
                         continue
-                    key = tuple(sorted((source.name, target.name)))
+                    lo, hi = sorted((source.name, target.name))
+                    key = (lo, hi)
                     if key in heuristic_pairs or key in seen_pairs:
                         continue
                     seen_pairs.add(key)

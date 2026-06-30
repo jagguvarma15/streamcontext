@@ -1,16 +1,20 @@
 """FastMCP server wrapper around the streamcontext search engine.
 
-Exposes one tool in v0.2.0-alpha (`search_events`). More tools land on Day 3
-(list_topics, describe_topic, find_similar_events).
+Exposes seven tools: search_events, list_topics, describe_topic,
+find_topics_by_purpose, get_topic_relationships, explain_field, and
+find_similar_events. Search runs against the Qdrant vector store; the
+catalog-backed tools read the semantic-catalog SQLite file.
 
-The server is a separate process from the ingestion pipeline. They share state
-through Qdrant only — no in-process coupling. See `docs/architecture.md`.
+The server is a separate process from the ingestion pipeline and the catalog
+refresher; they share state through Qdrant and the catalog file only, with no
+in-process coupling. See `docs/architecture.md`.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated, Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Annotated
 
 from fastmcp import FastMCP
 from pydantic import Field
@@ -23,9 +27,9 @@ from streamcontext.mcp_models import (
     FindTopicsResponse,
     RelationshipsResponse,
     SearchResponse,
+    ToolError,
     TopicDescription,
     TopicsResponse,
-    ToolError,
 )
 from streamcontext.mcp_search import EventNotFoundError, SearchEngine
 from streamcontext.rate_limit import ToolRateLimiter
@@ -42,14 +46,14 @@ def make_gate(
     *,
     authorize: AuthorizationHook | None,
     limiter: ToolRateLimiter,
-) -> Callable[[str], Awaitable["ToolError | None"]]:
+) -> Callable[[str], Awaitable[ToolError | None]]:
     """Compose the per-tool authorization + rate-limit check.
 
     Returned as a standalone async callable so it is testable without
     standing up the FastMCP transport.
     """
 
-    async def gate(tool: str) -> "ToolError | None":
+    async def gate(tool: str) -> ToolError | None:
         if authorize is not None:
             denied = await authorize(tool)
             if denied is not None:
@@ -205,7 +209,7 @@ def build_server(
                 ),
                 timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("mcp.search_events.timeout", timeout_sec=timeout)
             return ToolError(
                 code="timeout",
@@ -229,7 +233,7 @@ def build_server(
             return denied
         try:
             return await asyncio.wait_for(engine.list_topics(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("mcp.list_topics.timeout", timeout_sec=timeout)
             return ToolError(
                 code="timeout",
@@ -272,7 +276,7 @@ def build_server(
                 engine.describe_topic(name=name, sample_size=sample_size),
                 timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("mcp.describe_topic.timeout", topic=name, timeout_sec=timeout)
             return ToolError(
                 code="timeout",
@@ -318,7 +322,7 @@ def build_server(
                 engine.find_topics_by_purpose(description=description, limit=limit),
                 timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("mcp.find_topics_by_purpose.timeout", timeout_sec=timeout)
             return ToolError(
                 code="timeout",
@@ -353,7 +357,7 @@ def build_server(
             return await asyncio.wait_for(
                 engine.get_topic_relationships(topic=topic), timeout=timeout
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("mcp.get_topic_relationships.timeout", topic=topic, timeout_sec=timeout)
             return ToolError(
                 code="timeout",
@@ -398,7 +402,7 @@ def build_server(
             result = await asyncio.wait_for(
                 engine.explain_field(topic=topic, field=field), timeout=timeout
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("mcp.explain_field.timeout", topic=topic, field=field, timeout_sec=timeout)
             return ToolError(
                 code="timeout",
@@ -450,7 +454,7 @@ def build_server(
                 engine.find_similar_events(reference_id=reference_id, limit=limit),
                 timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("mcp.find_similar_events.timeout", ref=reference_id, timeout_sec=timeout)
             return ToolError(
                 code="timeout",
@@ -477,4 +481,4 @@ def warn_if_allowlist_empty(settings: Settings) -> None:
         )
 
 
-__all__ = ["build_server", "warn_if_allowlist_empty", "SERVER_NAME"]
+__all__ = ["SERVER_NAME", "build_server", "warn_if_allowlist_empty"]

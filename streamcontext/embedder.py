@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import OrderedDict
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from streamcontext.config import Settings
 from streamcontext.logging import get_logger
@@ -88,7 +88,7 @@ class OpenAIEmbedder:
 
     # Common output dims for OpenAI embedding models — used to set self.dim
     # without a network call. Override via constructor if you use a different one.
-    _MODEL_DIMS = {
+    _MODEL_DIMS: ClassVar[dict[str, int]] = {
         "text-embedding-3-small": 1536,
         "text-embedding-3-large": 3072,
         "text-embedding-ada-002": 1536,
@@ -98,7 +98,7 @@ class OpenAIEmbedder:
         self._model_name = model_name
         self.dim = dim if dim is not None else self._MODEL_DIMS.get(model_name, 1536)
         try:
-            from openai import AsyncOpenAI  # noqa: F401
+            from openai import AsyncOpenAI
         except ImportError as e:
             raise NotImplementedError(
                 "OpenAIEmbedder requires the 'openai' extra. "
@@ -124,7 +124,7 @@ class CachedEmbedder:
     a latency win. Disabled when `max_size <= 0`.
     """
 
-    def __init__(self, inner: "Embedder", max_size: int = 256) -> None:
+    def __init__(self, inner: Embedder, max_size: int = 256) -> None:
         self._inner = inner
         self._cache: OrderedDict[str, list[float]] = OrderedDict()
         self._max_size = max_size

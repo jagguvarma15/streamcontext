@@ -17,9 +17,9 @@ import os
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 from streamcontext.catalog.models import (
     ActivityStats,
@@ -29,7 +29,6 @@ from streamcontext.catalog.models import (
     SampleMessage,
     TopicEntry,
 )
-
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS topics (

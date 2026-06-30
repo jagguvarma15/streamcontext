@@ -26,8 +26,8 @@ keys. Numeric or boolean values are passed through unchanged.
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable
-
+from collections.abc import Iterable
+from typing import Any
 
 # Built-in patterns covering the obvious shapes. Conservative — false positives
 # are preferable to leaking real PII through the catalog.
@@ -84,4 +84,4 @@ def redact_value(
     return value
 
 
-__all__ = ["compile_patterns", "redact_value", "REDACTED_TOKEN"]
+__all__ = ["REDACTED_TOKEN", "compile_patterns", "redact_value"]

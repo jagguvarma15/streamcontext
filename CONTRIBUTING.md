@@ -5,7 +5,7 @@ Thanks for considering a contribution! The codebase is small on purpose — you 
 ## Setup
 
 ```bash
-git clone https://github.com/jagadeshvarma/streamcontext.git
+git clone https://github.com/jagguvarma15/streamcontext.git
 cd streamcontext
 uv venv && source .venv/bin/activate
 uv pip install -e '.[dev]'
@@ -36,13 +36,13 @@ ruff check .
 
 ## What we'll defer
 
-- Anything that requires building the MCP server right now — that's v0.2 and lives on its own branch.
+- Bidirectional flow — agents producing back into Kafka with schema validation. It is the hardest safety problem in the project and waits until the catalog is proven in production.
 - Multi-tenancy / RBAC. Not until v1.0.
 - A web UI. The Qdrant dashboard is the UI for now.
 
 ## Style
 
 - Type hints on public APIs.
-- `ruff` clean — `ruff check .` and `ruff format .`.
+- `ruff check .` and `mypy` clean. CI enforces both on every PR.
 - Docstrings on public functions when the *why* isn't obvious from the code.
-- Keep modules under ~250 lines when reasonable. Split before they grow.
+- Keep modules under ~600 lines when reasonable. Split before they grow.

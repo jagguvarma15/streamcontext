@@ -20,13 +20,12 @@ Cost discipline (these are not nice-to-haves; they are load-bearing):
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import os
 import re
 import time
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from streamcontext.catalog.models import (
     CatalogConfig,
@@ -37,6 +36,8 @@ from streamcontext.catalog.models import (
 )
 from streamcontext.catalog.privacy import (
     compile_patterns as _privacy_compile_patterns,
+)
+from streamcontext.catalog.privacy import (
     redact_value as _privacy_redact_value,
 )
 from streamcontext.catalog.store import CatalogStore
@@ -79,7 +80,7 @@ class AnthropicProvider:
     name = "anthropic"
 
     # Approximate USD per 1M tokens. Updated alongside model bumps.
-    _MODEL_PRICES = {
+    _MODEL_PRICES: ClassVar[dict[str, tuple[float, float]]] = {
         "claude-haiku-4-5-20251001": (1.00, 5.00),
         "claude-haiku-4-5": (1.00, 5.00),
         "claude-sonnet-4-6": (3.00, 15.00),
@@ -110,7 +111,9 @@ class AnthropicProvider:
             messages=[{"role": "user", "content": prompt}],
         )
         text = "".join(
-            block.text for block in resp.content if getattr(block, "type", "") == "text"
+            getattr(block, "text", "")
+            for block in resp.content
+            if getattr(block, "type", "") == "text"
         )
         usage = getattr(resp, "usage", None)
         in_tok = int(getattr(usage, "input_tokens", 0) or 0)
@@ -123,7 +126,7 @@ class OpenAIProvider:
 
     name = "openai"
 
-    _MODEL_PRICES = {
+    _MODEL_PRICES: ClassVar[dict[str, tuple[float, float]]] = {
         "gpt-4o-mini": (0.15, 0.60),
         "gpt-4o": (2.50, 10.0),
     }
@@ -504,7 +507,7 @@ def _safe_json(text: str) -> dict[str, Any]:
         # Look for the first balanced JSON object in the text.
         match = re.search(r"\{.*\}", candidate, re.DOTALL)
         if not match:
-            raise ValueError("no JSON object found in response")
+            raise ValueError("no JSON object found in response") from None
         return json.loads(match.group(0))
 
 
@@ -534,13 +537,13 @@ def _parse_cached(
 
 
 __all__ = [
+    "SYSTEM_PROMPT",
     "AnthropicProvider",
     "InferenceEngine",
     "LLMProvider",
     "LLMUnavailableError",
     "LocalLLMProvider",
     "OpenAIProvider",
-    "SYSTEM_PROMPT",
     "build_llm_provider",
     "build_prompt",
     "compile_patterns",

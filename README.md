@@ -3,7 +3,7 @@
 > **The semantic gateway between Kafka and AI agents.**
 > Self-describing event streams: every topic, field, and relationship explained in natural language, queryable by agents — not just by humans reading Avro schemas.
 
-[![status](https://img.shields.io/badge/status-v0.3.0-brightgreen)](#roadmap)
+[![ci](https://github.com/jagguvarma15/streamcontext/actions/workflows/ci.yml/badge.svg)](https://github.com/jagguvarma15/streamcontext/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
 [![docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker)](docker-compose.yml)
@@ -29,7 +29,7 @@ Diagram in [`docs/architecture.md`](docs/architecture.md). Catalog details in [`
 Requirements: Docker, Python 3.11+, [`uv`](https://github.com/astral-sh/uv) (or pip).
 
 ```bash
-git clone https://github.com/jagadeshvarma/streamcontext.git
+git clone https://github.com/jagguvarma15/streamcontext.git
 cd streamcontext
 cp .env.example .env
 

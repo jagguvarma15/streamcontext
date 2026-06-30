@@ -16,12 +16,12 @@ import pytest
 from streamcontext.catalog.activity import ActivityProfiler
 from streamcontext.catalog.builder import CatalogBuilder
 from streamcontext.catalog.inference import (
-    InferenceEngine,
     SYSTEM_PROMPT,
+    InferenceEngine,
+    _safe_json,
     build_prompt,
     compile_patterns,
     redact_value,
-    _safe_json,
 )
 from streamcontext.catalog.introspect import SchemaIntrospector
 from streamcontext.catalog.models import (
@@ -31,7 +31,6 @@ from streamcontext.catalog.models import (
     TopicEntry,
 )
 from streamcontext.catalog.store import CatalogStore
-
 
 # ---------------------------------------------------------------- redaction
 
@@ -211,7 +210,7 @@ async def test_engine_inserts_into_cache_and_reads_it(tmp_path):
     assert annotations["order_id"][1] == 0.95
     assert len(provider.calls) == 1
 
-    status2, desc2, conf2, annotations2 = await engine.infer(entry)
+    status2, desc2, _conf2, annotations2 = await engine.infer(entry)
     assert status2 == "inferred"
     assert desc2 == desc
     assert annotations2["order_id"] == annotations["order_id"]
@@ -267,7 +266,7 @@ async def test_engine_returns_failed_on_provider_exception(tmp_path):
             raise RuntimeError("boom")
 
     engine = InferenceEngine(provider=Boom(), store=store, config=cfg)
-    status, desc, conf, annotations = await engine.infer(_topic_entry())
+    status, desc, _conf, annotations = await engine.infer(_topic_entry())
     assert status == "failed"
     assert desc is None
     assert annotations == {}

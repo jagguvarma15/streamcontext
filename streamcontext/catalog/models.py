@@ -11,7 +11,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 InferenceStatus = Literal["pending", "inferred", "disabled", "failed"]
 RelationshipType = Literal["shared_key", "foreign_reference", "event_chain", "semantic"]
 

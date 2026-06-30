@@ -175,7 +175,7 @@ class Pipeline:
                         elapsed = time.monotonic() - batch_started_at
                         timeout = max(0.0, self._flush_interval - elapsed)
                     msg = await asyncio.wait_for(msg_iter.__anext__(), timeout=timeout)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     await _flush_due()
                     continue
                 except StopAsyncIteration:

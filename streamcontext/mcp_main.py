@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import sys
 
+from fastmcp import FastMCP
 from qdrant_client import AsyncQdrantClient
 
 from streamcontext.catalog.store import CatalogStore
@@ -45,7 +46,7 @@ def _try_schema_registry(url: str) -> _SchemaRegistryLike | None:
         return None
 
 
-async def _prepare() -> tuple[object, object]:
+async def _prepare() -> tuple[FastMCP, AsyncQdrantClient]:
     """Load config, build embedder + engine + server. Returns (mcp, client) so
     we can close the client cleanly on shutdown."""
     settings = load_settings()

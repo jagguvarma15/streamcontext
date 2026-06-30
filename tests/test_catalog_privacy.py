@@ -33,7 +33,6 @@ from streamcontext.catalog.privacy import (
 )
 from streamcontext.catalog.store import CatalogStore
 
-
 # ------------------------------------------------------------ pure redactor
 
 
@@ -285,7 +284,7 @@ async def test_inference_disables_after_ceiling_and_recovers(tmp_path):
     assert provider.calls == 1
     # Second call with a different fingerprint must be disabled — ceiling tripped.
     entry2 = TopicEntry(name="orders", schema_fingerprint="fp2")
-    status2, desc2, conf2, annotations2 = await engine.infer(entry2)
+    status2, desc2, _conf2, annotations2 = await engine.infer(entry2)
     assert status2 == "disabled"
     assert desc2 is None
     assert annotations2 == {}

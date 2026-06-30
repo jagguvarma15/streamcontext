@@ -28,7 +28,6 @@ from streamcontext.redaction import redact
 from streamcontext.sink import stable_uuid
 from streamcontext.types import KafkaMessage, VectorRecord
 
-
 # ---------- Pure unit tests ----------
 
 
@@ -290,7 +289,6 @@ async def test_end_to_end_kafka_to_qdrant() -> None:
 
     from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
     from qdrant_client import AsyncQdrantClient
-    from qdrant_client.http import models as rest
     from testcontainers.core.container import DockerContainer
     from testcontainers.kafka import KafkaContainer
 

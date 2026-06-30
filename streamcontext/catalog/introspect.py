@@ -188,7 +188,7 @@ class MessageSampler:
         if count <= 0:
             return []
         try:
-            from aiokafka import AIOKafkaConsumer, TopicPartition
+            from aiokafka import AIOKafkaConsumer
             from confluent_kafka.schema_registry import SchemaRegistryClient
             from confluent_kafka.schema_registry.avro import AvroDeserializer
             from confluent_kafka.serialization import (
@@ -238,7 +238,7 @@ class MessageSampler:
                     record = await asyncio.wait_for(
                         consumer.getone(), timeout=remaining
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     break
                 try:
                     ctx = SerializationContext(record.topic, MessageField.VALUE)
@@ -278,7 +278,7 @@ class MessageSampler:
 
 
 __all__ = [
-    "SchemaIntrospector",
     "MessageSampler",
+    "SchemaIntrospector",
     "flatten_avro_schema",
 ]

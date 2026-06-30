@@ -81,7 +81,7 @@ Consolidates the four `0.2.0a*` previews into a single release. streamcontext is
 
 ## [0.2.0a4] - MCP layer hardening and v0.2 audit
 
-Day 5 of the Week 2 plan. Makes the MCP server safe to expose to a real agent in a real environment.
+The hardening pass of the v0.2 cycle. Makes the MCP server safe to expose to a real agent in a real environment.
 
 ### Added
 - `streamcontext.rate_limit.TokenBucket` and `ToolRateLimiter`: per-tool token-bucket rate limiting with smooth refill. Configured via `SC_MCP_RATE_LIMIT_PER_MINUTE` (default 120/min, 0 disables). Denied calls return `ToolError(code="rate_limited")` with retry-after in seconds.
@@ -96,7 +96,7 @@ Day 5 of the Week 2 plan. Makes the MCP server safe to expose to a real agent in
 
 ## [0.2.0a3] - Structured filters, value-level indexes, MMR rerank
 
-Day 4 of the Week 2 plan. Makes search results good, not just present.
+The search-quality pass of the v0.2 cycle. Makes search results good, not just present.
 
 ### Added
 - `FilterClause` Pydantic model (`field`, plus exactly one of `eq`, `in_values`, or `gte`/`lte`).
@@ -146,7 +146,7 @@ First slice of v0.2: a separate MCP-server process that exposes the streamcontex
 - `docs/architecture.md` rewritten around the two-process picture (ingestion + MCP), with the topic-allowlist and payload-redaction reasoning called out.
 
 ### Notes
-- v0.2 is alpha. Day 3 expands the tool surface (`list_topics`, `describe_topic`, `find_similar_events`). Day 4 adds payload indexes for fast filter+vector search and MMR. Day 5 adds rate limiting and the embedding LRU. Day 6 ships docs and `docs/security.md`. The full plan lives in the Week 2 document.
+- v0.2 is alpha. Later alpha cuts expand the tool surface (`list_topics`, `describe_topic`, `find_similar_events`), add payload indexes for fast filter+vector search and MMR, add rate limiting and the embedding LRU, and ship docs and `docs/security.md`. The full plan lives in the Week 2 document.
 
 ## [0.1.1] - Pre-MCP audit cut
 
