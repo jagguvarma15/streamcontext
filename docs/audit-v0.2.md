@@ -125,7 +125,7 @@ Agents pass `status`, not `value.status`. The engine normalizes automatically; c
 
 Where: entire MCP server.
 
-Day 6 of the Week 2 plan ships this for the gateway. The MCP server runs over stdio in the common case, where HTTP endpoints don't apply. For SSE deployments, a `/health` route is a v0.2.x addition.
+The v0.2 documentation cut ships this for the gateway. The MCP server runs over stdio in the common case, where HTTP endpoints don't apply. For SSE deployments, a `/health` route is a v0.2.x addition.
 
 ### F4 (Defer) Per-tool concurrency semaphore
 
