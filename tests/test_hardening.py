@@ -1,15 +1,12 @@
-"""Tests for Day 5 hardening: rate limit, embed cache, value-size cap."""
+"""Tests for the v0.2 hardening pass: rate limit, embed cache, value-size cap."""
 
 from __future__ import annotations
-
-import time
 
 import pytest
 
 from streamcontext.embedder import CachedEmbedder
 from streamcontext.mcp_search import _maybe_truncate_value
 from streamcontext.rate_limit import TokenBucket, ToolRateLimiter
-
 
 # ---------- TokenBucket / ToolRateLimiter ----------
 
