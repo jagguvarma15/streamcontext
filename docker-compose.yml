@@ -80,6 +80,8 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: sc-gateway
+    ports:
+      - "${SC_HOST_BIND:-127.0.0.1}:9108:9108"   # Prometheus /metrics + /health
     depends_on:
       kafka:
         condition: service_healthy
@@ -102,13 +104,14 @@ services:
       SC_BATCH_FLUSH_INTERVAL_SEC: ${SC_BATCH_FLUSH_INTERVAL_SEC:-1.0}
       SC_LOG_LEVEL: ${SC_LOG_LEVEL:-INFO}
       SC_LOG_JSON: ${SC_LOG_JSON:-true}
+      # Bind the metrics server to all interfaces inside the container; the host
+      # port mapping above keeps it on loopback unless SC_HOST_BIND is widened.
+      SC_METRICS_HOST: 0.0.0.0
     volumes:
       # Cache HF model weights across restarts so cold start is fast.
       - ./.data/hf-cache:/home/streamcontext/.cache
     healthcheck:
-      # Process-alive check until the gateway exposes /health.
-      # The image installs procps for pgrep in the runtime stage.
-      test: ["CMD-SHELL", "pgrep -f 'streamcontext.main' >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9108/health >/dev/null"]
       interval: 15s
       timeout: 5s
       retries: 4
