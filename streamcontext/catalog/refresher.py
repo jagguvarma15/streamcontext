@@ -13,9 +13,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import time
+from collections.abc import Callable
 
 from qdrant_client import AsyncQdrantClient
 
+from streamcontext.catalog import metrics as cat
 from streamcontext.catalog.activity import ActivityProfiler
 from streamcontext.catalog.builder import CatalogBuilder
 from streamcontext.catalog.inference import (
@@ -29,6 +32,7 @@ from streamcontext.catalog.relationships import RelationshipDetector
 from streamcontext.catalog.store import CatalogStore
 from streamcontext.config import Settings, load_settings
 from streamcontext.logging import configure_logging, get_logger
+from streamcontext.observability import start_metrics_server
 
 log = get_logger("streamcontext.catalog.refresher")
 
@@ -125,11 +129,13 @@ async def refresh_once(
 ) -> None:
     for topic in topics:
         try:
-            await builder.refresh_topic(topic)
+            with cat.track("topic"):
+                await builder.refresh_topic(topic)
         except Exception:
             log.exception("catalog.refresh.failed", topic=topic)
     try:
-        await detector.refresh_all(topics)
+        with cat.track("relationships"):
+            await detector.refresh_all(topics)
     except Exception:
         log.exception("catalog.relationships.refresh_failed")
 
@@ -139,10 +145,41 @@ async def refresh_loop(
     detector: RelationshipDetector,
     topics: list[str],
     interval_sec: int,
+    *,
+    on_cycle: Callable[[], None] | None = None,
 ) -> None:
     while True:
         await refresh_once(builder, detector, topics)
+        if on_cycle is not None:
+            on_cycle()
         await asyncio.sleep(interval_sec)
+
+
+class _RefresherHealth:
+    """Mutable health state read by the /health endpoint."""
+
+    def __init__(self) -> None:
+        self._cycles = 0
+        self._last_ts = 0.0
+
+    def mark_cycle(self) -> None:
+        self._cycles += 1
+        self._last_ts = time.time()
+
+    def check(self) -> tuple[bool, dict]:
+        return (
+            self._cycles > 0,
+            {"cycles": self._cycles, "last_cycle_unix": round(self._last_ts, 1)},
+        )
+
+
+def _record_cycle(settings: Settings, builder: CatalogBuilder, health: _RefresherHealth) -> None:
+    cat.LAST_CYCLE_TIMESTAMP.set(time.time())
+    cat.UP.set(1)
+    if settings.catalog_llm_provider != "disabled":
+        spend = builder.store.get_spend_today(settings.catalog_llm_provider)
+        cat.LLM_SPEND_TODAY.labels(provider=settings.catalog_llm_provider).set(spend)
+    health.mark_cycle()
 
 
 async def _async_main(loop: bool) -> int:
@@ -153,6 +190,8 @@ async def _async_main(loop: bool) -> int:
     if not topics:
         log.error("catalog.no_topics_configured")
         return 78
+    health = _RefresherHealth()
+    metrics_server = start_metrics_server(settings, health_check=health.check)
     log.info(
         "catalog.refresher.start",
         topics=topics,
@@ -162,11 +201,18 @@ async def _async_main(loop: bool) -> int:
     try:
         if loop:
             await refresh_loop(
-                builder, detector, topics, settings.catalog_stats_refresh_sec
+                builder,
+                detector,
+                topics,
+                settings.catalog_stats_refresh_sec,
+                on_cycle=lambda: _record_cycle(settings, builder, health),
             )
         else:
             await refresh_once(builder, detector, topics)
+            _record_cycle(settings, builder, health)
     finally:
+        if metrics_server is not None:
+            metrics_server.stop()
         await qdrant.close()
     return 0
 
