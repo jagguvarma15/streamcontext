@@ -2,7 +2,8 @@
 #
 # Multi-stage to keep the runtime image lean. The model weights for
 # sentence-transformers are NOT baked in — they're downloaded on first start
-# and cached in /root/.cache/huggingface (mounted as a volume in compose).
+# and cached under /home/streamcontext/.cache (the non-root user's home,
+# mounted as a volume in compose).
 
 FROM python:3.11-slim AS builder
 
@@ -17,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 COPY streamcontext/ ./streamcontext/
 
 RUN pip install --upgrade pip && \
