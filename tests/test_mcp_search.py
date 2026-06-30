@@ -512,7 +512,7 @@ async def test_find_similar_events_off_allowlist_is_not_found() -> None:
         await engine.find_similar_events(reference_id="secrets:0:1")
 
 
-# ---------- Day 4: structured filters, field normalization, MMR ----------
+# ---------- Structured filters, field normalization, MMR ----------
 
 
 def test_normalize_field_prefixes_value_for_user_fields() -> None:
