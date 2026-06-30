@@ -1,0 +1,15 @@
+# Keep the Docker build context small. The Dockerfile copies only what it needs
+# (pyproject.toml, README.md, streamcontext/, schemas/); everything below is
+# noise that would otherwise be uploaded to the daemon on every build.
+.git
+.github
+.venv
+.data
+.pytest_cache
+.mypy_cache
+.ruff_cache
+**/__pycache__
+*.pyc
+*.egg-info
+.env
+.claude
