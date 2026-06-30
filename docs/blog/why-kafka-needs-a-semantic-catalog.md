@@ -185,7 +185,7 @@ into something you'd point at a real cluster.
 
 ## What this is, concretely
 
-[streamcontext](https://github.com/jagadeshvarma/streamcontext) is one
+[streamcontext](https://github.com/jagguvarma15/streamcontext) is one
 implementation of this idea. Three cooperating processes: an ingestion
 gateway that embeds Kafka messages into Qdrant, an MCP server that
 serves agents, and a catalog refresher that maintains the semantic
