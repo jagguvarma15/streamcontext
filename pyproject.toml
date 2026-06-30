@@ -38,8 +38,9 @@ dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
     "testcontainers[kafka]>=4.7.0",
-    "ruff>=0.5.0",
-    "mypy>=1.10.0",
+    "ruff>=0.15.0",
+    "mypy>=1.11.0",
+    "pre-commit>=3.7.0",
 ]
 
 [project.scripts]
@@ -47,9 +48,9 @@ streamcontext = "streamcontext.main:run"
 streamcontext-mcp = "streamcontext.mcp_main:run"
 
 [project.urls]
-Homepage = "https://github.com/jagadeshvarma/streamcontext"
-Repository = "https://github.com/jagadeshvarma/streamcontext"
-Issues = "https://github.com/jagadeshvarma/streamcontext/issues"
+Homepage = "https://github.com/jagguvarma15/streamcontext"
+Repository = "https://github.com/jagguvarma15/streamcontext"
+Issues = "https://github.com/jagguvarma15/streamcontext/issues"
 
 [build-system]
 requires = ["hatchling"]
@@ -69,3 +70,9 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["streamcontext"]
+ignore_missing_imports = true
+warn_redundant_casts = true
