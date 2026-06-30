@@ -23,7 +23,6 @@ from streamcontext.catalog.models import (
 )
 from streamcontext.catalog.store import CatalogStore
 
-
 # --------------------------------------------------------- schema introspection
 
 
@@ -143,7 +142,7 @@ def test_introspector_returns_fingerprint_and_fields():
 
 def test_introspector_handles_missing_subject():
     introspector = SchemaIntrospector(FakeSchemaRegistry({}))
-    subject, schema_id, version, fingerprint, raw, fields = introspector.introspect(
+    subject, schema_id, _version, fingerprint, _raw, fields = introspector.introspect(
         "missing"
     )
     assert subject is None
