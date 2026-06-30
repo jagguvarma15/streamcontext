@@ -21,7 +21,7 @@ class TokenBucket:
     last_refill: float
 
     @classmethod
-    def new(cls, capacity: int, refill_per_sec: float) -> "TokenBucket":
+    def new(cls, capacity: int, refill_per_sec: float) -> TokenBucket:
         return cls(
             capacity=float(capacity),
             refill_per_sec=float(refill_per_sec),
