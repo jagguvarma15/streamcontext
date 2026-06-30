@@ -22,11 +22,13 @@ from contextlib import suppress
 from aiokafka import TopicPartition
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential
 
+from streamcontext import metrics as gw
 from streamcontext.config import Settings
 from streamcontext.consumer import AvroKafkaConsumer
 from streamcontext.embedder import Embedder, build_embedder, message_to_text
 from streamcontext.errors import ConfigurationError, PipelineFatalError
 from streamcontext.logging import get_logger
+from streamcontext.observability import start_metrics_server
 from streamcontext.redaction import redact
 from streamcontext.sink import VectorSink, build_sink
 from streamcontext.types import KafkaMessage, VectorRecord
@@ -89,11 +91,23 @@ class Pipeline:
         # Throughput counters reset between log lines.
         self._counter_messages = 0
         self._counter_batches = 0
+        self._running = False
 
     def request_stop(self) -> None:
         if not self._stop.is_set():
             log.info("pipeline.stop_requested")
             self._stop.set()
+
+    def health(self) -> tuple[bool, dict]:
+        """Readiness for the /health endpoint: running and not fatally halted."""
+        return (
+            self._running and self._fatal is None,
+            {
+                "running": self._running,
+                "halted": self._fatal is not None,
+                "error": str(self._fatal) if self._fatal is not None else None,
+            },
+        )
 
     async def _flush(self, batch: list[KafkaMessage]) -> None:
         """Embed, upsert, commit — or raise PipelineFatalError on persistent failure."""
@@ -109,6 +123,7 @@ class Pipeline:
                 f"embedder failed for batch of {len(batch)} after retries: {exc}"
             ) from exc
         embed_ms = (time.perf_counter() - t0) * 1000
+        gw.EMBED_SECONDS.observe(embed_ms / 1000)
 
         records = [
             _build_record(m, v, self._redact_fields, self._include_headers)
@@ -124,6 +139,7 @@ class Pipeline:
                 f"sink upsert failed for batch of {len(batch)} after retries: {exc}"
             ) from exc
         sink_ms = (time.perf_counter() - t1) * 1000
+        gw.SINK_SECONDS.observe(sink_ms / 1000)
 
         offsets = _max_offsets(batch)
         try:
@@ -134,6 +150,10 @@ class Pipeline:
 
         self._counter_messages += len(batch)
         self._counter_batches += 1
+        gw.MESSAGES_INGESTED.inc(len(batch))
+        gw.BATCHES_FLUSHED.inc()
+        for tp, next_off in offsets.items():
+            gw.COMMITTED_OFFSET.labels(topic=tp.topic, partition=str(tp.partition)).set(next_off)
         log.info(
             "pipeline.batch_flushed",
             n=len(batch),
@@ -154,6 +174,8 @@ class Pipeline:
     async def run(self) -> None:
         await self._sink.ensure_ready()
         await self._consumer.start()
+        self._running = True
+        gw.UP.set(1)
 
         batch: list[KafkaMessage] = []
         batch_started_at: float | None = None
@@ -194,6 +216,8 @@ class Pipeline:
             log.error("pipeline.fatal", error=str(exc))
             self.request_stop()
         finally:
+            self._running = False
+            gw.UP.set(0)
             report_task.cancel()
             with suppress(asyncio.CancelledError):
                 await report_task
@@ -252,4 +276,9 @@ async def build_and_run(settings: Settings) -> None:
         with suppress(NotImplementedError):
             loop.add_signal_handler(sig, pipeline.request_stop)
 
-    await pipeline.run()
+    metrics_server = start_metrics_server(settings, health_check=pipeline.health)
+    try:
+        await pipeline.run()
+    finally:
+        if metrics_server is not None:
+            metrics_server.stop()
