@@ -13,10 +13,6 @@ from streamcontext.catalog.inference import (
     LLMUnavailableError,
     build_llm_provider,
 )
-from streamcontext.catalog.relationships import (
-    RelationshipDetector,
-    detect_pair_heuristic,
-)
 from streamcontext.catalog.models import (
     ActivityStats,
     CatalogConfig,
@@ -25,6 +21,10 @@ from streamcontext.catalog.models import (
     RelationshipEntry,
     SampleMessage,
     TopicEntry,
+)
+from streamcontext.catalog.relationships import (
+    RelationshipDetector,
+    detect_pair_heuristic,
 )
 from streamcontext.catalog.store import CatalogStore
 
