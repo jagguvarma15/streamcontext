@@ -31,23 +31,24 @@ from streamcontext.catalog.models import CatalogConfig
 from streamcontext.catalog.relationships import RelationshipDetector
 from streamcontext.catalog.store import CatalogStore
 from streamcontext.config import Settings, load_settings
+from streamcontext.connections import kafka_client_kwargs, schema_registry_config
 from streamcontext.logging import configure_logging, get_logger
 from streamcontext.observability import start_metrics_server
 
 log = get_logger("streamcontext.catalog.refresher")
 
 
-def _try_schema_registry(url: str):
+def _try_schema_registry(settings: Settings):
     try:
         from confluent_kafka.schema_registry import SchemaRegistryClient
     except ImportError:
         return None
     try:
-        client = SchemaRegistryClient({"url": url})
+        client = SchemaRegistryClient(schema_registry_config(settings))
         client.get_subjects()
         return client
     except Exception as exc:
-        log.warning("catalog.sr.unreachable", url=url, error=str(exc))
+        log.warning("catalog.sr.unreachable", url=settings.schema_registry_url, error=str(exc))
         return None
 
 
@@ -69,7 +70,7 @@ def build_builder(
     settings: Settings,
 ) -> tuple[CatalogBuilder, RelationshipDetector, AsyncQdrantClient]:
     store = CatalogStore(settings.catalog_db_path)
-    sr_client = _try_schema_registry(settings.schema_registry_url)
+    sr_client = _try_schema_registry(settings)
     introspector = SchemaIntrospector(sr_client)
     qdrant = AsyncQdrantClient(url=settings.qdrant_url)
     profiler = ActivityProfiler(qdrant, settings.qdrant_collection)
@@ -79,6 +80,8 @@ def build_builder(
             bootstrap_servers=settings.kafka_bootstrap_servers,
             schema_registry_url=settings.schema_registry_url,
             timeout_sec=settings.catalog_sample_timeout_sec,
+            kafka_security=kafka_client_kwargs(settings),
+            sr_config=schema_registry_config(settings),
         )
     catalog_config = build_catalog_config(settings)
     inference: InferenceEngine | None = None
