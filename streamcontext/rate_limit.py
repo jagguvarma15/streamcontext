@@ -7,7 +7,10 @@ relies on asyncio's single-threadedness for safe access.
 
 from __future__ import annotations
 
+import asyncio
 import time
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 
 
@@ -78,3 +81,36 @@ class ToolRateLimiter:
         if b.try_take(1.0):
             return True, 0.0
         return False, b.retry_after_sec(1.0)
+
+
+@asynccontextmanager
+async def _null_slot() -> AsyncIterator[None]:
+    yield
+
+
+class ToolConcurrencyLimiter:
+    """Bounds concurrent in-flight calls per tool via a per-tool semaphore.
+
+    Complements the rate limiter: the rate limit caps calls per minute; this
+    caps how many run simultaneously, so a burst of slow queries cannot pin
+    unbounded embed calls or Qdrant connections. Disabled (unbounded) when
+    `max_concurrent` is zero.
+    """
+
+    def __init__(self, max_concurrent: int) -> None:
+        self._max = int(max_concurrent)
+        self._sems: dict[str, asyncio.Semaphore] = {}
+
+    @property
+    def enabled(self) -> bool:
+        return self._max > 0
+
+    def slot(self, tool: str) -> AbstractAsyncContextManager[None]:
+        """Async context manager to hold while the tool runs."""
+        if self._max <= 0:
+            return _null_slot()
+        sem = self._sems.get(tool)
+        if sem is None:
+            sem = asyncio.Semaphore(self._max)
+            self._sems[tool] = sem
+        return sem
