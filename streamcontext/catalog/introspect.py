@@ -178,11 +178,15 @@ class MessageSampler:
         schema_registry_url: str,
         group_id_prefix: str = "streamcontext-catalog-sampler",
         timeout_sec: float = 5.0,
+        kafka_security: dict | None = None,
+        sr_config: dict | None = None,
     ) -> None:
         self._bootstrap = bootstrap_servers
         self._sr_url = schema_registry_url
         self._group_prefix = group_id_prefix
         self._timeout = timeout_sec
+        self._kafka_security = kafka_security or {}
+        self._sr_config = sr_config
 
     async def sample(self, topic: str, count: int = 10) -> list[SampleMessage]:
         if count <= 0:
@@ -199,7 +203,9 @@ class MessageSampler:
             log.warning("catalog.sampler.unavailable", error=str(exc))
             return []
 
-        deserializer = AvroDeserializer(SchemaRegistryClient({"url": self._sr_url}))
+        deserializer = AvroDeserializer(
+            SchemaRegistryClient(self._sr_config or {"url": self._sr_url})
+        )
         group_id = f"{self._group_prefix}-{topic}-{int(asyncio.get_event_loop().time()*1000)}"
         consumer = AIOKafkaConsumer(
             topic,
@@ -208,6 +214,7 @@ class MessageSampler:
             auto_offset_reset="latest",
             enable_auto_commit=False,
             max_poll_records=count,
+            **self._kafka_security,
         )
         await consumer.start()
         samples: list[SampleMessage] = []

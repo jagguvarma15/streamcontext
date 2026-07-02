@@ -10,11 +10,9 @@ refresher; they share state through Qdrant and the catalog file only, with no
 in-process coupling. See `docs/architecture.md`.
 """
 
-from __future__ import annotations
-
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastmcp import FastMCP
 from pydantic import Field
@@ -32,7 +30,7 @@ from streamcontext.mcp_models import (
     TopicsResponse,
 )
 from streamcontext.mcp_search import EventNotFoundError, SearchEngine
-from streamcontext.rate_limit import ToolRateLimiter
+from streamcontext.rate_limit import ToolConcurrencyLimiter, ToolRateLimiter
 
 log = get_logger("streamcontext.mcp.server")
 
@@ -98,6 +96,7 @@ def build_server(
     settings: Settings,
     *,
     authorize: AuthorizationHook | None = None,
+    enable_sse_auth: bool = False,
 ) -> FastMCP:
     """Construct a FastMCP server with all tools registered.
 
@@ -110,10 +109,33 @@ def build_server(
     (deny). The error code should be `not_authorized` so agents can
     distinguish missing permissions from other failures.
     """
-    mcp = FastMCP(name=SERVER_NAME, instructions=SERVER_INSTRUCTIONS)
+    auth = None
+    if enable_sse_auth and settings.mcp_sse_auth_token:
+        # Static bearer token on the HTTP/SSE transport. stdio is local by
+        # construction and is not routed through this verifier.
+        from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+
+        auth = StaticTokenVerifier(
+            tokens={settings.mcp_sse_auth_token: {"client_id": "streamcontext"}}
+        )
+    mcp = FastMCP(name=SERVER_NAME, instructions=SERVER_INSTRUCTIONS, auth=auth)
     timeout = settings.mcp_tool_timeout_sec
     limiter = ToolRateLimiter(settings.mcp_rate_limit_per_minute)
+    concurrency = ToolConcurrencyLimiter(settings.mcp_max_concurrent_calls)
     _gate = make_gate(authorize=authorize, limiter=limiter)
+
+    async def _run(tool: str, make_coro: Callable[[], Awaitable[Any]]) -> Any:
+        """Run a tool body under its concurrency slot and the wall-clock timeout.
+
+        The timeout covers slot admission plus execution; the coroutine is
+        created inside the slot so a timed-out call leaves no orphan coroutine.
+        """
+
+        async def _guarded() -> Any:
+            async with concurrency.slot(tool):
+                return await make_coro()
+
+        return await asyncio.wait_for(_guarded(), timeout=timeout)
 
     @mcp.tool()
     async def search_events(
@@ -197,8 +219,9 @@ def build_server(
         if denied is not None:
             return denied
         try:
-            return await asyncio.wait_for(
-                engine.search_events(
+            return await _run(
+                "search_events",
+                lambda: engine.search_events(
                     query=query,
                     limit=limit,
                     topic=topic,
@@ -207,7 +230,6 @@ def build_server(
                     filters=filters,
                     diverse=diverse,
                 ),
-                timeout=timeout,
             )
         except TimeoutError:
             log.warning("mcp.search_events.timeout", timeout_sec=timeout)
@@ -232,7 +254,7 @@ def build_server(
         if denied is not None:
             return denied
         try:
-            return await asyncio.wait_for(engine.list_topics(), timeout=timeout)
+            return await _run("list_topics", engine.list_topics)
         except TimeoutError:
             log.warning("mcp.list_topics.timeout", timeout_sec=timeout)
             return ToolError(
@@ -272,9 +294,9 @@ def build_server(
         if denied is not None:
             return denied
         try:
-            return await asyncio.wait_for(
-                engine.describe_topic(name=name, sample_size=sample_size),
-                timeout=timeout,
+            return await _run(
+                "describe_topic",
+                lambda: engine.describe_topic(name=name, sample_size=sample_size),
             )
         except TimeoutError:
             log.warning("mcp.describe_topic.timeout", topic=name, timeout_sec=timeout)
@@ -318,9 +340,9 @@ def build_server(
         if denied is not None:
             return denied
         try:
-            return await asyncio.wait_for(
-                engine.find_topics_by_purpose(description=description, limit=limit),
-                timeout=timeout,
+            return await _run(
+                "find_topics_by_purpose",
+                lambda: engine.find_topics_by_purpose(description=description, limit=limit),
             )
         except TimeoutError:
             log.warning("mcp.find_topics_by_purpose.timeout", timeout_sec=timeout)
@@ -354,8 +376,9 @@ def build_server(
         if denied is not None:
             return denied
         try:
-            return await asyncio.wait_for(
-                engine.get_topic_relationships(topic=topic), timeout=timeout
+            return await _run(
+                "get_topic_relationships",
+                lambda: engine.get_topic_relationships(topic=topic),
             )
         except TimeoutError:
             log.warning("mcp.get_topic_relationships.timeout", topic=topic, timeout_sec=timeout)
@@ -399,8 +422,9 @@ def build_server(
         if denied is not None:
             return denied
         try:
-            result = await asyncio.wait_for(
-                engine.explain_field(topic=topic, field=field), timeout=timeout
+            result = await _run(
+                "explain_field",
+                lambda: engine.explain_field(topic=topic, field=field),
             )
         except TimeoutError:
             log.warning("mcp.explain_field.timeout", topic=topic, field=field, timeout_sec=timeout)
@@ -450,9 +474,9 @@ def build_server(
         if denied is not None:
             return denied
         try:
-            return await asyncio.wait_for(
-                engine.find_similar_events(reference_id=reference_id, limit=limit),
-                timeout=timeout,
+            return await _run(
+                "find_similar_events",
+                lambda: engine.find_similar_events(reference_id=reference_id, limit=limit),
             )
         except TimeoutError:
             log.warning("mcp.find_similar_events.timeout", ref=reference_id, timeout_sec=timeout)

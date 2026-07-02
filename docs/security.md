@@ -12,7 +12,7 @@ streamcontext v0.3 assumes:
 - The operator is the one configuring which Kafka topics the gateway ingests and which the MCP server exposes. They are not multi-tenant; one set of topics, one agent surface.
 - Producers writing to Kafka are inside the operator's trust boundary in the sense that they could already corrupt the stream. streamcontext does not attempt to detect or quarantine malicious producers - it does protect downstream agents from the fallout (see Payload redaction below).
 
-**Out of scope for v0.3:** multi-tenant gateway deployments, authenticated SSE transport, internet-exposed MCP servers, Kafka auth (SASL/SCRAM/mTLS), Schema Registry auth, fine-grained per-agent access control. The MCP server now ships an `authorize` hook (`build_server(authorize=...)`) so a downstream deployment that needs per-caller auth can plug a real check in without forking — but no auth is shipped in-tree. All of these remain tracked as v1.0 work in `audit-v0.1.md`, `audit-v0.2.md`, and `audit-v0.3.md`.
+**Still out of scope:** multi-tenant gateway deployments, internet-exposed MCP servers, and fine-grained per-agent access control. Kafka SASL/SSL, Schema Registry basic-auth and TLS, and a static bearer token on the SSE transport are now configurable (opt-in — see the recommended settings below); the shipped defaults stay local/trusted-host. The MCP server also ships an `authorize` hook (`build_server(authorize=...)`) for custom per-caller checks. Remaining hardening is tracked in the audit docs.
 
 ## What the gateway protects against
 
@@ -43,6 +43,12 @@ SC_PAYLOAD_REDACT_FIELDS=email,phone,card_number,ssn,authorization
 SC_PAYLOAD_INCLUDE_HEADERS=false
 SC_PAYLOAD_INDEX_FIELDS=status,region,channel        # whatever your queries actually filter on
 SC_HOST_BIND=127.0.0.1                                # default; only override with explicit reason
+SC_KAFKA_SECURITY_PROTOCOL=SASL_SSL                   # real clusters; PLAINTEXT is local/dev only
+SC_KAFKA_SASL_MECHANISM=SCRAM-SHA-256
+SC_KAFKA_SASL_USERNAME=streamcontext
+SC_KAFKA_SASL_PASSWORD=...
+SC_SCHEMA_REGISTRY_USER=streamcontext                 # if the registry requires basic auth
+SC_SCHEMA_REGISTRY_PASSWORD=...
 
 # MCP server (read process)
 SC_MCP_TOPIC_ALLOWLIST=orders,clicks                  # explicit subset, never empty in production
@@ -52,6 +58,8 @@ SC_MCP_TOOL_TIMEOUT_SEC=5
 SC_MCP_RATE_LIMIT_PER_MINUTE=60                        # per tool; tighten further for paid embedders
 SC_MCP_EMBED_CACHE_SIZE=512                            # higher for chat-style usage
 SC_MCP_MAX_VALUE_BYTES=4096
+SC_MCP_MAX_CONCURRENT_CALLS=8                          # bound simultaneous in-flight tool calls
+SC_MCP_SSE_AUTH_TOKEN=...                              # required if you expose the SSE transport
 
 # Catalog refresher (third process)
 SC_CATALOG_DB_PATH=/var/lib/streamcontext/catalog.sqlite

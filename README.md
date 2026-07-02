@@ -148,7 +148,9 @@ Everything is env-driven. The most useful knobs are below; see [`.env.example`](
 | `SC_KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | |
 | `SC_KAFKA_TOPICS` | `orders` | Comma-separated. |
 | `SC_KAFKA_DLQ_TOPIC` | (empty) | Dead-letter topic for undeserializable messages. Empty = log-and-count only. |
+| `SC_KAFKA_SECURITY_PROTOCOL` | `PLAINTEXT` | `SSL`/`SASL_PLAINTEXT`/`SASL_SSL` enable TLS and/or SASL (`SC_KAFKA_SASL_*`, `SC_KAFKA_SSL_*`). |
 | `SC_SCHEMA_REGISTRY_URL` | `http://localhost:8081` | |
+| `SC_SCHEMA_REGISTRY_USER` | (empty) | Basic-auth user for a secured registry (+ `_PASSWORD`, `_SSL_CAFILE`). |
 | `SC_EMBEDDER_PROVIDER` | `local` | `local` (sentence-transformers) or `openai`. |
 | `SC_EMBEDDER_MODEL` | `all-MiniLM-L6-v2` | Change in lockstep with `SC_QDRANT_VECTOR_DIM`. |
 | `SC_QDRANT_VECTOR_DIM` | `384` | Must match the embedder. Validated at startup. |
@@ -168,6 +170,8 @@ Everything is env-driven. The most useful knobs are below; see [`.env.example`](
 | `SC_MCP_RATE_LIMIT_PER_MINUTE` | `120` | Per-tool token bucket. `0` disables. |
 | `SC_MCP_EMBED_CACHE_SIZE` | `256` | LRU size for the embedder query cache. `0` disables. |
 | `SC_MCP_MAX_VALUE_BYTES` | `8192` | Per-result `value` JSON cap. Larger values are replaced with a truncated stub. |
+| `SC_MCP_MAX_CONCURRENT_CALLS` | `0` | Per-tool in-flight cap. `0` disables. |
+| `SC_MCP_SSE_AUTH_TOKEN` | (empty) | Bearer token required on the SSE transport. Empty leaves SSE unauthenticated. |
 
 ### Semantic catalog
 
@@ -214,7 +218,7 @@ Threat model and recommended production-adjacent settings in [`docs/security.md`
 - **v0.1 — streaming sink.** Kafka, embed, Qdrant. Batched, redacted, deterministic upsert, halt-on-failure semantics. Done.
 - **v0.2 — MCP server.** `list_topics`, `describe_topic`, `search_events`, `find_similar_events`. Topic allowlist, rate limit, embed cache, value truncation. Done.
 - **v0.3 — semantic catalog.** Schema introspection, sample-backed inferred descriptions, per-field meanings, relationship detection, daily LLM spend ceiling, PII redaction at persistence. Three new MCP tools: `find_topics_by_purpose`, `get_topic_relationships`, `explain_field`. This release.
-- **Later.** Bidirectional flow (agents producing into Kafka with schema validation). Kafka Connect packaging. Multi-sink (Pinecone, Weaviate, pgvector). Jinja text-extraction templates. SASL/SSL Kafka, SR auth, SSE auth.
+- **Later.** Bidirectional flow (agents producing into Kafka with schema validation). Kafka Connect packaging. Multi-sink (Pinecone, Weaviate, pgvector). Jinja text-extraction templates.
 
 ## Development
 

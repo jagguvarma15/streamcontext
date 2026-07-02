@@ -18,6 +18,7 @@ from confluent_kafka.serialization import MessageField, SerializationContext
 
 from streamcontext import metrics as gw
 from streamcontext.config import Settings
+from streamcontext.connections import kafka_client_kwargs, schema_registry_config
 from streamcontext.logging import get_logger
 from streamcontext.types import KafkaMessage
 
@@ -32,7 +33,7 @@ class AvroKafkaConsumer:
         self._consumer: AIOKafkaConsumer | None = None
         self._dlq_topic = settings.kafka_dlq_topic
         self._producer: AIOKafkaProducer | None = None
-        sr = SchemaRegistryClient({"url": settings.schema_registry_url})
+        sr = SchemaRegistryClient(schema_registry_config(settings))
         # Reader schema is None → use the writer schema embedded in each message
         # via the magic-byte / schema-id prefix. This is what we want for a
         # generic ingester.
@@ -53,11 +54,13 @@ class AvroKafkaConsumer:
             max_poll_records=500,
             session_timeout_ms=30_000,
             heartbeat_interval_ms=10_000,
+            **kafka_client_kwargs(self._settings),
         )
         await self._consumer.start()
         if self._dlq_topic:
             self._producer = AIOKafkaProducer(
                 bootstrap_servers=self._settings.kafka_bootstrap_servers,
+                **kafka_client_kwargs(self._settings),
             )
             await self._producer.start()
             log.info("consumer.dlq.enabled", dlq_topic=self._dlq_topic)

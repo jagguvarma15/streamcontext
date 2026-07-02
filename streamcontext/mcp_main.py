@@ -18,7 +18,8 @@ from fastmcp import FastMCP
 from qdrant_client import AsyncQdrantClient
 
 from streamcontext.catalog.store import CatalogStore
-from streamcontext.config import load_settings
+from streamcontext.config import Settings, load_settings
+from streamcontext.connections import schema_registry_config
 from streamcontext.embedder import CachedEmbedder, build_embedder
 from streamcontext.errors import ConfigurationError
 from streamcontext.logging import configure_logging, get_logger
@@ -27,7 +28,7 @@ from streamcontext.mcp_search import SearchEngine, _SchemaRegistryLike
 from streamcontext.mcp_server import build_server, warn_if_allowlist_empty
 
 
-def _try_schema_registry(url: str) -> _SchemaRegistryLike | None:
+def _try_schema_registry(settings: Settings) -> _SchemaRegistryLike | None:
     """Best-effort SR client construction. None on import or connect failure."""
     log = get_logger("streamcontext.mcp")
     try:
@@ -35,8 +36,9 @@ def _try_schema_registry(url: str) -> _SchemaRegistryLike | None:
     except ImportError:
         log.debug("mcp.schema_registry.unavailable", reason="confluent_kafka not installed")
         return None
+    url = settings.schema_registry_url
     try:
-        client = SchemaRegistryClient({"url": url})
+        client = SchemaRegistryClient(schema_registry_config(settings))
         # No-op probe: list subjects. If the host is unreachable this raises.
         client.get_subjects()
         log.info("mcp.schema_registry.connected", url=url)
@@ -46,7 +48,7 @@ def _try_schema_registry(url: str) -> _SchemaRegistryLike | None:
         return None
 
 
-async def _prepare() -> tuple[FastMCP, AsyncQdrantClient]:
+async def _prepare(transport: str) -> tuple[FastMCP, AsyncQdrantClient]:
     """Load config, build embedder + engine + server. Returns (mcp, client) so
     we can close the client cleanly on shutdown."""
     settings = load_settings()
@@ -66,7 +68,7 @@ async def _prepare() -> tuple[FastMCP, AsyncQdrantClient]:
     embedder = CachedEmbedder(inner_embedder, max_size=settings.mcp_embed_cache_size)
 
     client = AsyncQdrantClient(url=settings.qdrant_url)
-    sr_client = _try_schema_registry(settings.schema_registry_url)
+    sr_client = _try_schema_registry(settings)
     catalog_reader: CatalogReader | None = None
     try:
         catalog_store = CatalogStore(settings.catalog_db_path)
@@ -104,7 +106,15 @@ async def _prepare() -> tuple[FastMCP, AsyncQdrantClient]:
         embed_cache_size=settings.mcp_embed_cache_size,
         schema_registry=bool(sr_client),
     )
-    mcp = build_server(engine, settings)
+    mcp = build_server(engine, settings, enable_sse_auth=(transport == "sse"))
+    if transport == "sse" and not settings.mcp_sse_auth_token:
+        log.warning(
+            "mcp.sse.unauthenticated",
+            note=(
+                "SSE transport without SC_MCP_SSE_AUTH_TOKEN; anyone who can reach "
+                "the port can call tools. Set the token or front it with auth."
+            ),
+        )
     return mcp, client
 
 
@@ -121,7 +131,7 @@ def run() -> None:
     args = parser.parse_args()
 
     try:
-        mcp, client = asyncio.run(_prepare())
+        mcp, client = asyncio.run(_prepare(args.transport))
     except ConfigurationError as exc:
         print(f"streamcontext-mcp: configuration error: {exc}", file=sys.stderr)
         sys.exit(78)
