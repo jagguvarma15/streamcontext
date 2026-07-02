@@ -32,9 +32,24 @@ class Settings(BaseSettings):
     # disables the DLQ (failures are logged only). When set, the raw message is
     # republished to this topic with sc_origin_* and sc_error headers.
     kafka_dlq_topic: str = ""
+    # Kafka client security. PLAINTEXT (default) needs no credentials; the other
+    # protocols enable SASL and/or TLS. Applied to the gateway consumer, the DLQ
+    # producer, and the catalog sampler.
+    kafka_security_protocol: Literal["PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"] = "PLAINTEXT"
+    kafka_sasl_mechanism: str = "PLAIN"
+    kafka_sasl_username: str = ""
+    kafka_sasl_password: str = ""
+    kafka_ssl_cafile: str = ""
+    kafka_ssl_certfile: str = ""
+    kafka_ssl_keyfile: str = ""
 
     # --- Schema Registry ---
     schema_registry_url: str = "http://localhost:8081"
+    # Basic-auth credentials for a secured Schema Registry (maps to
+    # basic.auth.user.info). TLS CA via schema_registry_ssl_cafile.
+    schema_registry_user: str = ""
+    schema_registry_password: str = ""
+    schema_registry_ssl_cafile: str = ""
 
     # --- Embedder ---
     embedder_provider: Literal["local", "openai"] = "local"
@@ -88,6 +103,12 @@ class Settings(BaseSettings):
     # carrying the original size. Keeps a single huge record from blowing out
     # the agent's context window.
     mcp_max_value_bytes: int = Field(default=8192, ge=256)
+    # Max concurrent in-flight calls per tool. 0 disables (unbounded). Bounds
+    # simultaneous slow queries and embed calls independent of the rate limit.
+    mcp_max_concurrent_calls: int = Field(default=0, ge=0)
+    # Bearer token required on the SSE (HTTP) transport. Empty leaves SSE
+    # unauthenticated; stdio is local by construction and unaffected.
+    mcp_sse_auth_token: str = ""
 
     # --- Catalog (v0.3) ---
     # Path to the SQLite file that backs the semantic catalog. The refresher
